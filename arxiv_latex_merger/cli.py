@@ -21,13 +21,13 @@ def main(args):
     for code in args.arxiv_codes:
         main_tex_path = find_main_tex_file(code)
 
-        merged_tex_content, encoding = merge_tex_files(
+        merged_tex_content, _encoding = merge_tex_files(
             main_tex_path,
             remove_src=args.remove_src,
             merge_bib=not getattr(args, 'no_bib', False),
         )
         
-        output_tex_path = f'{code}_merged_{encoding}.tex'
+        output_tex_path = f'{code}.tex'
         
         with open(f"{output_tex_path}", "w") as output_file:
             output_file.write(merged_tex_content)
@@ -36,7 +36,7 @@ def main(args):
         if args.demacro:
             print(f"WARNING: Using experimental 'demacro' processing...")
             input_tex_path = output_tex_path
-            output_tex_path = f"{code}_merged_clean_{encoding}.tex"
+            output_tex_path = f"{code}_clean.tex"
             demacro_f = LatexDemacro(inp=input_tex_path, out=output_tex_path)
 
             try:

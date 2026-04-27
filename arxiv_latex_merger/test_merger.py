@@ -148,6 +148,9 @@ class CliTests(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
+            self.assertEqual((Path(temp_dir) / "1234.56789.tex").read_text(), "merged")
+            self.assertFalse((Path(temp_dir) / "1234.56789_merged_utf-8.tex").exists())
+
         download_mock.assert_called_once_with("1234.56789")
         find_mock.assert_called_once_with("1234.56789")
         merge_mock.assert_called_once_with(
