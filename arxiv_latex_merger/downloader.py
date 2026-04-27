@@ -5,6 +5,15 @@ from pathlib import Path
 from tqdm import tqdm
 import requests
 
+ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?{}"
+
+
+def _arxiv_results(search):
+    client = arxiv.Client()
+    client.query_url_format = ARXIV_QUERY_URL
+    return client.results(search)
+
+
 def download_arxiv_source_files(arxiv_code):
     output_dir = arxiv_code
 
@@ -12,7 +21,7 @@ def download_arxiv_source_files(arxiv_code):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Use arxiv API to get the paper object
-    papers = arxiv.Search(id_list=[arxiv_code]).results()
+    papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
     paper = next(papers)
 
     # Download the source files using the download_source method
@@ -62,12 +71,11 @@ def download_random_arxiv_papers(n=1):
                                 max_results=int(n),
                                 sort_by = arxiv.SortCriterion.SubmittedDate)
     arxiv_codes = []
-    for paper in random_papers.results():
+    for paper in _arxiv_results(random_papers):
         arxiv_code = paper.entry_id.rsplit('/', 1)[-1]
         print(f"Downloading source files for paper: {arxiv_code}")
         download_arxiv_source_files(arxiv_code)
         arxiv_codes.append(arxiv_code)
     
     return arxiv_codes
-
 
