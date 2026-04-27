@@ -26,7 +26,13 @@ To use the arXiv LaTeX Merger, simply run the command `arxiv-latex-merger` follo
 arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 [...]
 ```
 
-This will download the source files for all selected codes, detect the main TeX file, merge the contents, and save the merged TeX files as `2304.09319_merged.tex` and `1812.09740_merged.tex`.
+This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files as `2304.09319_merged_utf-8.tex` and `1812.09740_merged_utf-8.tex`.
+
+Use `--no_bib` to preserve the original `\bibliographystyle{...}` and `\bibliography{...}` commands instead of inlining the generated `.bbl` bibliography:
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 --no_bib
+```
 
 Or try this to download randomly:
 
@@ -51,6 +57,5 @@ arxiv-latex-merger --demacro
 ## License
 
 This project is licensed under the MIT License.
-
 
 

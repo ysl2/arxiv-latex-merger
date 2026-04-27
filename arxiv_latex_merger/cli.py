@@ -14,17 +14,6 @@ def main(args):
     if args.arxiv_codes:
         for code in args.arxiv_codes:
             download_arxiv_source_files(code)
-
-            main_tex_path = find_main_tex_file(code)
-
-            merged_tex_content, encoding = merge_tex_files(main_tex_path)
-            
-            output_tex_path = f'{code}_merged_{encoding}.tex'
-
-            with open(output_tex_path, 'w') as output_file:
-                output_file.write(merged_tex_content)
-
-            print(f'Merged .tex file saved to {output_tex_path}')
     else:
         print(f"Downloading {args.n_random} random arXiv paper(s)...")
         args.arxiv_codes = download_random_arxiv_papers(args.n_random)
@@ -32,7 +21,11 @@ def main(args):
     for code in args.arxiv_codes:
         main_tex_path = find_main_tex_file(code)
 
-        merged_tex_content, encoding = merge_tex_files(main_tex_path, remove_src=args.remove_src)
+        merged_tex_content, encoding = merge_tex_files(
+            main_tex_path,
+            remove_src=args.remove_src,
+            merge_bib=not getattr(args, 'no_bib', False),
+        )
         
         output_tex_path = f'{code}_merged_{encoding}.tex'
         
@@ -64,5 +57,6 @@ def cli():
     parser.add_argument('--n_random', default=1, help='Fetch n random papers.')
     parser.add_argument('--demacro', action='store_true', default=False, help='(Experimental/Buggy) Attempt to de-macro custom commands defined in the merged file.')
     parser.add_argument('--remove_src', action='store_true', default=False, help='Remove source folder after successful merging.')
+    parser.add_argument('--no_bib', action='store_true', default=False, help='Do not inline the generated .bbl bibliography in the merged file.')
     args = parser.parse_args()
     main(args)

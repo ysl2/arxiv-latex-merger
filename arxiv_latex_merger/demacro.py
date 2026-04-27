@@ -1,4 +1,4 @@
-"""
+r"""
 Attempt at writing a de-macroing parser for arXiv merged file.
 
 Functionality:
@@ -71,51 +71,68 @@ class LatexDemacro:
         for _, declaration_params in self.newcommand_declarations.items():
             self.tmp = self.tmp.replace(declaration_params['declaration_expression'], "")
 
+    def _next_nonspace_index(self, start):
+        while start < len(self.tmp) and self.tmp[start].isspace():
+            start += 1
+        return start
+
+    def _read_control_sequence_argument(self, start):
+        start = self._next_nonspace_index(start)
+        if start >= len(self.tmp):
+            return None, start
+
+        if self.tmp[start] != "\\":
+            end = start
+            while end < len(self.tmp) and not self.tmp[end].isspace():
+                end += 1
+            return self.tmp[start:end], end
+
+        end = start + 1
+        if end < len(self.tmp) and self.tmp[end].isalpha():
+            while end < len(self.tmp) and self.tmp[end].isalpha():
+                end += 1
+        elif end < len(self.tmp):
+            end += 1
+
+        return self.tmp[start:end], end
+
 
     def parse_def_declarations(self):
 
         # look for def command
-        # TODO: generalize the pattern for more symbols?
-        def_pattern = re.compile(r'\\def\s*\\([a-zA-Z\:\#\']*|@?[a-zA-Z\:\#\']*@?)?\s*')
+        def_pattern = re.compile(r'\\def\s*\\([a-zA-Z@:\#\']+|.)\s*')
         defs = def_pattern.finditer(self.tmp)
-        num_args = None
         for match in defs:
             name = match.group(1)
-            def_args = None
             num_args = 0
+            definition = None
             declaration_start = match.start()
-            
-            # looking for arguments in parentheses
             start = match.end()
-            end = find_matching_bracket(self.tmp, start, bra="(")
-            if end != -1:
-                def_args = self.tmp[start +1:end]
-                num_args = len(def_args.split("#")[1:])
 
-                # looking for definition
-                start = end + 1
-                end = find_matching_bracket(self.tmp, start, bra="{")
-                if end != -1:
-                    definition = self.tmp[start + 1:end]
-            
-            # looking for arguments in square brackets
-            end = find_matching_bracket(self.tmp, start, bra="[")
-            if end != -1:
-                def_args = self.tmp[start +1:end]
+            # looking for argument declarations in parentheses or square brackets
+            start = self._next_nonspace_index(start)
+            if start < len(self.tmp) and self.tmp[start] in "([":
+                bra = self.tmp[start]
+                end = find_matching_bracket(self.tmp, start, bra=bra)
+                if end == -1:
+                    continue
+                def_args = self.tmp[start + 1:end]
                 num_args = len(def_args.split("#")[1:])
-                
-                # looking for definition
                 start = end + 1
+
+            # looking for definition
+            start = self._next_nonspace_index(start)
+            if start < len(self.tmp) and self.tmp[start] == "{":
                 end = find_matching_bracket(self.tmp, start, bra="{")
-                if end != -1:
-                    definition = self.tmp[start + 1:end]
-            
-            # looking for definition - no args
-            end = find_matching_bracket(self.tmp, start, bra="{")
-            if end != -1:
+                if end == -1:
+                    continue
                 definition = self.tmp[start + 1:end]
-            
-            declaration_end = end
+                if "\n" not in definition:
+                    definition = definition.strip()
+                declaration_end = end
+            else:
+                continue
+
             self.def_declarations[name] = {'num_args': num_args,
                                     'definition': definition,
                                     'declaration_expression': self.tmp[declaration_start : declaration_end + 1]}
@@ -174,32 +191,40 @@ class LatexDemacro:
         for macro in self.def_declarations.keys():
             # work-around for re-definitions of existing symbol characters
             if macro.isalnum():
-                macro_pattern = re.compile(rf'\\{macro}\b')
+                macro_pattern = re.compile(rf'\\{re.escape(macro)}\b')
             else:
-                macro_pattern = re.compile(rf'\\{macro}')
+                macro_pattern = re.compile(rf'\\{re.escape(macro)}')
             macro_occurences = macro_pattern.finditer(self.tmp)
             for match in macro_occurences:
                 occurence = match.group(0)
                 # print(occurence)
                 num_args = self.def_declarations[macro]['num_args']
                 args = []
-                end = None
                 
                 if num_args>0:
                     start = match.end()
-                    end = find_matching_bracket(self.tmp, start, bra="(")
-                    if end != -1:
-                        for arg in self.tmp[start + 1:end].split(","):
-                            args.append(arg.strip())
-                        occurence = occurence + "(" + self.tmp[start + 1:end] + ")"
+                    token_start = self._next_nonspace_index(start)
+                    end = -1
+                    if token_start < len(self.tmp) and self.tmp[token_start] == "(":
+                        end = find_matching_bracket(self.tmp, token_start, bra="(")
+                        if end != -1:
+                            for arg in self.tmp[token_start + 1:end].split(","):
+                                args.append(arg.strip())
+                            occurence = occurence + "(" + self.tmp[token_start + 1:end] + ")"
                     
-                    # look for 2nd arg
-                    start = end + 1
-                    end = find_matching_bracket(self.tmp, start, bra="[")
-                    if end != -1:
-                        for arg in self.tmp[start + 1:end].split(","):
-                            args.append(arg.strip())
-                        occurence = occurence + "[" + self.tmp[start + 1:end] + "]"
+                    token_start = self._next_nonspace_index(start)
+                    if not args and token_start < len(self.tmp) and self.tmp[token_start] == "[":
+                        end = find_matching_bracket(self.tmp, token_start, bra="[")
+                        if end != -1:
+                            for arg in self.tmp[token_start + 1:end].split(","):
+                                args.append(arg.strip())
+                            occurence = occurence + "[" + self.tmp[token_start + 1:end] + "]"
+
+                    if not args and num_args == 1:
+                        arg, end = self._read_control_sequence_argument(start)
+                        if arg:
+                            args.append(arg)
+                            occurence = occurence + arg
                 
                 try:
                     self.def_transformations[occurence] = defcommand(self.def_declarations[macro]['definition'],
@@ -334,7 +359,8 @@ class LatexDemacro:
                 self.def_transformations.pop(occurence)
                 self.def_occurence_positions.pop(occurence)
                 self.tmp = self.tmp[:start] + demacroed + self.tmp[end:]
-                self.parse_for_def_occurences() # updating indices, since the text has been altered
+                if occurence not in demacroed:
+                    self.parse_for_def_occurences() # updating indices, since the text has been altered
                 # print(json.dumps(self.def_transformations, indent=2))
                 # print(json.dumps(self.def_occurence_positions, indent=2))
 
