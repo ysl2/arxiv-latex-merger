@@ -78,6 +78,62 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\% Section body.", merged)
         self.assertNotIn("\\input{section}", merged)
 
+    def test_nested_inputs_can_resolve_paths_relative_to_main_file_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "camera-ready" / "sec").mkdir(parents=True)
+            (root / "camera-ready" / "tab").mkdir(parents=True)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{camera-ready/sec/method}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "camera-ready" / "sec" / "method.tex").write_text(
+                "Before table.\n"
+                "\\input{camera-ready/tab/results}\n"
+                "After table.\n",
+                encoding="utf-8",
+            )
+            (root / "camera-ready" / "tab" / "results.tex").write_text(
+                "Table body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Before table.", merged)
+        self.assertIn("Table body.", merged)
+        self.assertIn("After table.", merged)
+        self.assertNotIn("\\input{camera-ready/tab/results}", merged)
+
+    def test_nested_inputs_do_not_fallback_to_child_file_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sec").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{sec/method}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sec" / "method.tex").write_text(
+                "\\input{subsection}\n",
+                encoding="utf-8",
+            )
+            (root / "sec" / "subsection.tex").write_text(
+                "Nested body.\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(FileNotFoundError) as error:
+                merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Expected", str(error.exception))
+        self.assertIn("subsection.tex", str(error.exception))
+
 
 class MergerBibliographyTests(unittest.TestCase):
     def test_existing_bbl_is_inlined_and_bibliography_commands_are_removed(self):

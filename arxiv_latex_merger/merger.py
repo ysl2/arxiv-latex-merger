@@ -73,7 +73,33 @@ def _replace_active_matches(line, matches, replacement):
     return ''.join(output_parts)
 
 
-def process_input_commands(file_lines, file_dir):
+def _tex_path(file_path):
+    if file_path.endswith('.tex'):
+        return file_path
+
+    return f"{file_path}.tex"
+
+
+def _resolve_input_file_path(input_relative_path, file_dir, root_dir):
+    if os.path.isabs(input_relative_path):
+        input_file_path = _tex_path(os.path.normpath(input_relative_path))
+    else:
+        input_file_path = _tex_path(os.path.normpath(os.path.join(root_dir, input_relative_path)))
+
+    if os.path.isfile(input_file_path):
+        return input_file_path
+
+    root_display = root_dir or '.'
+    raise FileNotFoundError(
+        f"Could not resolve \\input{{{input_relative_path}}} from {file_dir}. "
+        f"Expected {input_file_path} relative to {root_display}."
+    )
+
+
+def process_input_commands(file_lines, file_dir, root_dir=None):
+    if root_dir is None:
+        root_dir = file_dir
+
     input_pattern = re.compile(r'\\input\{(.+?)\}')
     output_lines = []
 
@@ -90,20 +116,11 @@ def process_input_commands(file_lines, file_dir):
         for match in input_matches:
             line_parts.append(line[previous_end:match.start()])
             input_relative_path = match.group(1).replace('\\', '/')
-            input_file_path = os.path.normpath(os.path.join(file_dir, input_relative_path))
-
-            if not input_file_path.endswith('.tex'):
-                input_file_path += '.tex'
-
-            if not os.path.isfile(input_file_path):
-                input_file_path = os.path.normpath(os.path.join(file_dir, '..', input_relative_path))
-                if not input_file_path.endswith('.tex'):
-                    input_file_path += '.tex'
-
+            input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir)
             input_file_dir = os.path.dirname(input_file_path)
             input_file_lines, _ = read_tex_file(input_file_path)
 
-            input_file_content = process_input_commands(input_file_lines, input_file_dir)
+            input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir)
             line_parts.append(''.join(input_file_content))
             previous_end = match.end()
 
