@@ -34,37 +34,87 @@ def find_main_tex_file(directory):
 
     raise FileNotFoundError(f"No main .tex file found in the specified directory {directory}")
 
+
+def _is_escaped(line, index):
+    backslash_count = 0
+    current_index = index - 1
+
+    while current_index >= 0 and line[current_index] == '\\':
+        backslash_count += 1
+        current_index -= 1
+
+    return backslash_count % 2 == 1
+
+
+def _is_in_latex_comment(line, index):
+    for match in re.finditer('%', line):
+        if not _is_escaped(line, match.start()):
+            return match.start() <= index
+
+    return False
+
+
+def _active_pattern_matches(pattern, line):
+    for match in pattern.finditer(line):
+        if not _is_in_latex_comment(line, match.start()):
+            yield match
+
+
+def _replace_active_matches(line, matches, replacement):
+    output_parts = []
+    previous_end = 0
+
+    for match in matches:
+        output_parts.append(line[previous_end:match.start()])
+        output_parts.append(replacement)
+        previous_end = match.end()
+
+    output_parts.append(line[previous_end:])
+    return ''.join(output_parts)
+
+
 def process_input_commands(file_lines, file_dir):
     input_pattern = re.compile(r'\\input\{(.+?)\}')
     output_lines = []
 
     for line in file_lines:
-        if not line.strip().startswith('%'):
-            while match := input_pattern.search(line):
-                input_relative_path = match.group(1).replace('\\', '/')
-                input_file_path = os.path.normpath(os.path.join(file_dir, input_relative_path))
+        input_matches = list(_active_pattern_matches(input_pattern, line))
 
+        if not input_matches:
+            output_lines.append(line)
+            continue
+
+        line_parts = []
+        previous_end = 0
+
+        for match in input_matches:
+            line_parts.append(line[previous_end:match.start()])
+            input_relative_path = match.group(1).replace('\\', '/')
+            input_file_path = os.path.normpath(os.path.join(file_dir, input_relative_path))
+
+            if not input_file_path.endswith('.tex'):
+                input_file_path += '.tex'
+
+            if not os.path.isfile(input_file_path):
+                input_file_path = os.path.normpath(os.path.join(file_dir, '..', input_relative_path))
                 if not input_file_path.endswith('.tex'):
                     input_file_path += '.tex'
 
-                if not os.path.isfile(input_file_path):
-                    input_file_path = os.path.normpath(os.path.join(file_dir, '..', input_relative_path))
-                    if not input_file_path.endswith('.tex'):
-                        input_file_path += '.tex'
+            input_file_dir = os.path.dirname(input_file_path)
+            input_file_lines, _ = read_tex_file(input_file_path)
 
-                input_file_dir = os.path.dirname(input_file_path)
-                input_file_lines, _ = read_tex_file(input_file_path)
+            input_file_content = process_input_commands(input_file_lines, input_file_dir)
+            line_parts.append(''.join(input_file_content))
+            previous_end = match.end()
 
-                input_file_content = process_input_commands(input_file_lines, input_file_dir)
-
-                line = line[:match.start()] + ''.join(input_file_content) + line[match.end():]
-
-        output_lines.append(line)
+        line_parts.append(line[previous_end:])
+        output_lines.append(''.join(line_parts))
 
     return output_lines
 
 def _is_commented_line(line):
-    return line.strip().startswith('%')
+    first_non_space_index = len(line) - len(line.lstrip())
+    return _is_in_latex_comment(line, first_non_space_index)
 
 
 def _active_bibliography_commands(file_lines):
@@ -72,9 +122,7 @@ def _active_bibliography_commands(file_lines):
     commands = []
 
     for line in file_lines:
-        if _is_commented_line(line):
-            continue
-        commands.extend(bibliography_pattern.findall(line))
+        commands.extend(match.group(1) for match in _active_pattern_matches(bibliography_pattern, line))
 
     return commands
 
@@ -149,18 +197,16 @@ def process_bibliography_commands(file_lines, main_tex_path):
     output_lines = []
 
     for line in file_lines:
-        if _is_commented_line(line):
-            output_lines.append(line)
+        bibliography_matches = list(_active_pattern_matches(bibliography_pattern, line))
+        if bibliography_matches:
+            output_lines.extend(bbl_file_lines)
             continue
 
-        if bibliography_style_pattern.search(line):
-            line = bibliography_style_pattern.sub('', line)
+        bibliography_style_matches = list(_active_pattern_matches(bibliography_style_pattern, line))
+        if bibliography_style_matches:
+            line = _replace_active_matches(line, bibliography_style_matches, '')
             if line.strip():
                 output_lines.append(line)
-            continue
-
-        if bibliography_pattern.search(line):
-            output_lines.extend(bbl_file_lines)
             continue
 
         output_lines.append(line)

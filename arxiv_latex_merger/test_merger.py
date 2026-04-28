@@ -12,6 +12,73 @@ from . import cli as cli_module
 from .merger import merge_tex_files
 
 
+class MergerInputCommentTests(unittest.TestCase):
+    def test_commented_inputs_in_child_files_are_not_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text(
+                "Section body.\n"
+                "%   \\input{missing}\n"
+                "Text before comment. % \\input{also_missing}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Section body.", merged)
+        self.assertIn("%   \\input{missing}", merged)
+        self.assertIn("Text before comment. % \\input{also_missing}", merged)
+
+    def test_active_inputs_in_child_files_are_processed_recursively(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text(
+                "Before subsection.\n"
+                "\\input{subsection}\n"
+                "After subsection.\n",
+                encoding="utf-8",
+            )
+            (root / "subsection.tex").write_text("Nested body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Before subsection.", merged)
+        self.assertIn("Nested body.", merged)
+        self.assertIn("After subsection.", merged)
+        self.assertNotIn("\\input{subsection}", merged)
+
+    def test_escaped_percent_does_not_comment_out_input(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\% \\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text("Section body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\% Section body.", merged)
+        self.assertNotIn("\\input{section}", merged)
+
+
 class MergerBibliographyTests(unittest.TestCase):
     def test_existing_bbl_is_inlined_and_bibliography_commands_are_removed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -65,6 +132,30 @@ class MergerBibliographyTests(unittest.TestCase):
 
         self.assertIn("\\bibliographystyle{plain}", merged)
         self.assertIn("\\bibliography{refs}", merged)
+        self.assertNotIn("\\begin{thebibliography}", merged)
+
+    def test_commented_bibliography_commands_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "%   \\bibliography{refs}\n"
+                "Text before comment. % \\bibliographystyle{plain}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "main.bbl").write_text(
+                "\\begin{thebibliography}{1}\n"
+                "\\bibitem{key} Reference text.\n"
+                "\\end{thebibliography}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"))
+
+        self.assertIn("%   \\bibliography{refs}", merged)
+        self.assertIn("Text before comment. % \\bibliographystyle{plain}", merged)
         self.assertNotIn("\\begin{thebibliography}", merged)
 
     def test_missing_bbl_is_generated_from_existing_bib(self):
