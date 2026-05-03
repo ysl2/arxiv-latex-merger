@@ -1,14 +1,16 @@
 import io
 import os
 import subprocess
+import tarfile
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from . import cli as cli_module
+from . import downloader as downloader_module
 from .merger import merge_tex_files
 
 
@@ -305,3 +307,49 @@ class CliTests(unittest.TestCase):
             remove_src=False,
             merge_bib=True,
         )
+
+
+class DownloaderTests(unittest.TestCase):
+    def test_download_arxiv_source_files_reports_download_progress(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"\\documentclass{article}\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_payload = payload.getvalue()
+
+        class FakeResponse:
+            headers = {"content-length": str(len(tar_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield tar_payload[:10]
+                yield tar_payload[10:]
+
+        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
+                        with redirect_stdout(stdout), redirect_stderr(stderr):
+                            downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertTrue((output_dir / "main.tex").exists())
+            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
+
+        output = stdout.getvalue()
+        self.assertIn("Fetching arXiv metadata for 1234.56789...", output)
+        self.assertIn("Downloading source files for 1234.56789...", output)
+        self.assertIn("Downloading source for 1234.56789", stderr.getvalue())
+        get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)

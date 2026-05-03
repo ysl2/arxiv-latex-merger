@@ -1,4 +1,5 @@
 import os
+import random
 import tarfile
 import arxiv
 from pathlib import Path
@@ -14,6 +15,34 @@ def _arxiv_results(search):
     return client.results(search)
 
 
+def _source_url_for_paper(paper):
+    return paper.pdf_url.replace('/pdf/', '/src/')
+
+
+def _download_file_with_progress(url, path, desc):
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    content_length = response.headers.get("content-length")
+    try:
+        total_size = int(content_length) if content_length else None
+    except ValueError:
+        total_size = None
+
+    with open(path, "wb") as output_file:
+        with tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=desc,
+        ) as progress_bar:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    output_file.write(chunk)
+                    progress_bar.update(len(chunk))
+
+
 def download_arxiv_source_files(arxiv_code):
     output_dir = arxiv_code
 
@@ -21,28 +50,36 @@ def download_arxiv_source_files(arxiv_code):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Use arxiv API to get the paper object
+    print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
     papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
     paper = next(papers)
 
-    # Download the source files using the download_source method
-    paper.download_source(dirpath=output_dir, filename=f"{arxiv_code}.tar.gz")
+    # Download the source files.
+    tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
+    print(f"Downloading source files for {arxiv_code}...", flush=True)
+    _download_file_with_progress(
+        _source_url_for_paper(paper),
+        tar_file,
+        desc=f"Downloading source for {arxiv_code}",
+    )
 
     # Extract the tar file to the output directory
-    tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
     with tarfile.open(tar_file, "r:gz") as tar:
         members = tar.getmembers()
-        progress_bar = tqdm(total=len(members), unit="file", desc=f"Extracting source files for {arxiv_code}")
-        for member in members:
-            tar.extract(member, output_dir)
-            progress_bar.update(1)
-        progress_bar.close()
+        with tqdm(
+            total=len(members),
+            unit="file",
+            desc=f"Extracting source files for {arxiv_code}",
+        ) as progress_bar:
+            for member in members:
+                tar.extract(member, output_dir)
+                progress_bar.update(1)
 
     # Remove the tar file
     os.remove(tar_file)
 
     print(f"Successfully downloaded and extracted source files to {output_dir} directory")
 
-import random
 
 def download_random_arxiv_papers(n=1):
     
@@ -78,4 +115,3 @@ def download_random_arxiv_papers(n=1):
         arxiv_codes.append(arxiv_code)
     
     return arxiv_codes
-
