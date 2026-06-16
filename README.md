@@ -28,6 +28,14 @@ arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 [...]
 
 This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files as `2304.09319.tex` and `1812.09740.tex`.
 
+Use `--skip_download_if_exists` to reuse an existing local source directory instead of downloading it again:
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 --skip_download_if_exists
+```
+
+If the local directory does not exist, the tool falls back to downloading the arXiv source as usual.
+
 Use `--no_bib` to preserve the original `\bibliographystyle{...}` and `\bibliography{...}` commands instead of inlining the generated `.bbl` bibliography:
 
 ```

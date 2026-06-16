@@ -4,6 +4,7 @@ __version__='0.2.0'
 __author__='iokarkan'
 
 import argparse
+from pathlib import Path
 from .merger import merge_tex_files, find_main_tex_file
 from .downloader import download_arxiv_source_files, download_random_arxiv_papers
 from .demacro import LatexDemacro
@@ -13,7 +14,10 @@ def main(args):
 
     if args.arxiv_codes:
         for code in args.arxiv_codes:
-            download_arxiv_source_files(code)
+            if getattr(args, 'skip_download_if_exists', False) and Path(code).is_dir():
+                print(f"Local source directory exists for {code}; skipping download.")
+            else:
+                download_arxiv_source_files(code)
     else:
         print(f"Downloading {args.n_random} random arXiv paper(s)...")
         args.arxiv_codes = download_random_arxiv_papers(args.n_random)
@@ -60,5 +64,6 @@ def cli():
     parser.add_argument('--remove_src', action='store_true', default=False, help='Remove source folder after successful merging.')
     parser.add_argument('--no_bib', action='store_true', default=False, help='Do not inline the generated .bbl bibliography in the merged file.')
     parser.add_argument('--remove_comments', action='store_true', default=False, help='Remove LaTeX comments from the merged file while preserving syntax-sensitive percent characters.')
+    parser.add_argument('--skip_download_if_exists', action='store_true', default=False, help='Skip downloading an arXiv source when a local source directory with the same code already exists.')
     args = parser.parse_args()
     main(args)

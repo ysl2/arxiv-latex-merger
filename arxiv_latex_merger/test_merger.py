@@ -392,6 +392,7 @@ class CliTests(unittest.TestCase):
             remove_src=False,
             no_bib=False,
             remove_comments=False,
+            skip_download_if_exists=False,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -417,6 +418,105 @@ class CliTests(unittest.TestCase):
             merge_bib=True,
             remove_comments=False,
         )
+
+    def test_skip_download_if_exists_uses_existing_directory(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1234.56789").mkdir()
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789/main.tex") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")) as merge_mock:
+                            stdout = io.StringIO()
+                            with redirect_stdout(stdout):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((root / "1234.56789.tex").read_text(), "merged")
+
+        download_mock.assert_not_called()
+        find_mock.assert_called_once_with("1234.56789")
+        merge_mock.assert_called_once_with(
+            "1234.56789/main.tex",
+            remove_src=False,
+            merge_bib=True,
+            remove_comments=False,
+        )
+        self.assertIn("skipping download", stdout.getvalue())
+
+    def test_skip_download_if_exists_downloads_when_directory_missing(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789/main.tex") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+        download_mock.assert_called_once_with("1234.56789")
+        find_mock.assert_called_once_with("1234.56789")
+
+    def test_skip_download_if_exists_is_checked_per_code(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1111.11111", "2222.22222"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        def fake_find_main_tex_file(code):
+            return f"{code}/main.tex"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1111.11111").mkdir()
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", side_effect=fake_find_main_tex_file) as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")) as merge_mock:
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((root / "1111.11111.tex").read_text(), "merged")
+            self.assertEqual((root / "2222.22222.tex").read_text(), "merged")
+
+        download_mock.assert_called_once_with("2222.22222")
+        self.assertEqual(find_mock.call_count, 2)
+        self.assertEqual(merge_mock.call_count, 2)
 
 
 class DownloaderTests(unittest.TestCase):
