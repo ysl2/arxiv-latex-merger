@@ -54,6 +54,22 @@ def _is_in_latex_comment(line, index):
     return False
 
 
+def _first_unescaped_percent(line):
+    for match in re.finditer('%', line):
+        if not _is_escaped(line, match.start()):
+            return match.start()
+
+    return None
+
+
+def _line_ending(line):
+    for ending in ('\r\n', '\n', '\r'):
+        if line.endswith(ending):
+            return ending
+
+    return ''
+
+
 def _active_pattern_matches(pattern, line):
     for match in pattern.finditer(line):
         if not _is_in_latex_comment(line, match.start()):
@@ -132,6 +148,90 @@ def process_input_commands(file_lines, file_dir, root_dir=None):
 def _is_commented_line(line):
     first_non_space_index = len(line) - len(line.lstrip())
     return _is_in_latex_comment(line, first_non_space_index)
+
+
+_LITERAL_ENVIRONMENTS = {
+    'verbatim',
+    'verbatim*',
+    'Verbatim',
+    'lstlisting',
+    'minted',
+    'filecontents',
+    'filecontents*',
+}
+
+
+def _first_active_environment_match(line, command, environment_names=None, start_after=None):
+    environment_pattern = re.compile(rf'\\{command}\{{([^}}]+)\}}')
+
+    for match in _active_pattern_matches(environment_pattern, line):
+        if start_after is not None and match.start() <= start_after:
+            continue
+
+        if environment_names is None or match.group(1) in environment_names:
+            return match
+
+    return None
+
+
+def _strip_latex_comment_from_line(line):
+    comment_start = _first_unescaped_percent(line)
+
+    if comment_start is None:
+        return line
+
+    prefix = line[:comment_start]
+    ending = _line_ending(line)
+    comment_body = line[comment_start + 1:]
+    if ending:
+        comment_body = comment_body[:-len(ending)]
+
+    if not prefix.strip():
+        return None
+
+    if not comment_body.strip() or not prefix[-1].isspace():
+        return f"{prefix}%{ending}"
+
+    return f"{prefix.rstrip()}{ending}"
+
+
+def remove_latex_comments(file_lines):
+    output_lines = []
+    in_comment_environment = False
+    literal_environment = None
+
+    for line in file_lines:
+        if in_comment_environment:
+            if _first_active_environment_match(line, 'end', {'comment'}):
+                in_comment_environment = False
+            continue
+
+        if literal_environment:
+            output_lines.append(line)
+            if _first_active_environment_match(line, 'end', {literal_environment}):
+                literal_environment = None
+            continue
+
+        comment_begin = _first_active_environment_match(line, 'begin', {'comment'})
+        literal_begin = _first_active_environment_match(line, 'begin', _LITERAL_ENVIRONMENTS)
+
+        if comment_begin and (not literal_begin or comment_begin.start() < literal_begin.start()):
+            if not _first_active_environment_match(line, 'end', {'comment'}, start_after=comment_begin.start()):
+                in_comment_environment = True
+            continue
+
+        if literal_begin:
+            output_lines.append(line)
+            literal_environment = literal_begin.group(1)
+            if _first_active_environment_match(line, 'end', {literal_environment}, start_after=literal_begin.start()):
+                literal_environment = None
+            continue
+
+        stripped_line = _strip_latex_comment_from_line(line)
+        if stripped_line is not None:
+            output_lines.append(stripped_line)
+
+    return output_lines
 
 
 def _active_bibliography_commands(file_lines):
@@ -231,7 +331,7 @@ def process_bibliography_commands(file_lines, main_tex_path):
     return output_lines
 
 
-def merge_tex_files(main_tex_path, remove_src=False, merge_bib=True):
+def merge_tex_files(main_tex_path, remove_src=False, merge_bib=True, remove_comments=False):
     
     main_tex_dir = os.path.dirname(main_tex_path)
     main_tex_lines, encoding = read_tex_file(main_tex_path)
@@ -239,6 +339,9 @@ def merge_tex_files(main_tex_path, remove_src=False, merge_bib=True):
 
     if merge_bib:
         merged_tex_lines = process_bibliography_commands(merged_tex_lines, main_tex_path)
+
+    if remove_comments:
+        merged_tex_lines = remove_latex_comments(merged_tex_lines)
         
     if remove_src:
         shutil.rmtree(Path(f"./{main_tex_dir}"))

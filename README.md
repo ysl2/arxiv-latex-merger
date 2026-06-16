@@ -34,6 +34,14 @@ Use `--no_bib` to preserve the original `\bibliographystyle{...}` and `\bibliogr
 arxiv-latex-merger --arxiv_codes 2304.09319 --no_bib
 ```
 
+Use `--remove_comments` to remove LaTeX comments from the merged file:
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 --remove_comments
+```
+
+This removes `%` comments and standard `comment` environments after merging, while preserving escaped percent signs, syntax-sensitive line-ending `%` characters, and percent signs inside common verbatim/listing environments.
+
 Or try this to download randomly:
 
 ```
@@ -57,4 +65,3 @@ arxiv-latex-merger --demacro
 ## License
 
 This project is licensed under the MIT License.
-

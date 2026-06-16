@@ -275,6 +275,114 @@ class MergerBibliographyTests(unittest.TestCase):
         self.assertNotIn("\\begin{thebibliography}", merged)
 
 
+class MergerRemoveCommentsTests(unittest.TestCase):
+    def test_remove_comments_is_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "% draft note\n"
+                "\\begin{document}\n"
+                "Visible text. % hidden note\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("% draft note", merged)
+        self.assertIn("Visible text. % hidden note", merged)
+
+    def test_remove_comments_drops_comment_lines_and_inline_comment_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article} % template note\n"
+                "  % draft note\n"
+                "\\begin{document}\n"
+                "Visible text. % hidden note\n"
+                "Escaped percent \\% remains. % hidden note\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False, remove_comments=True)
+
+        self.assertIn("\\documentclass{article}\n", merged)
+        self.assertIn("Visible text.\n", merged)
+        self.assertIn("Escaped percent \\% remains.\n", merged)
+        self.assertNotIn("draft note", merged)
+        self.assertNotIn("hidden note", merged)
+        self.assertIn("\\%", merged)
+
+    def test_remove_comments_preserves_syntax_sensitive_line_end_percent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\newcommand{\\foo}{%\n"
+                "  body%\n"
+                "}%\n"
+                "\\begin{document}\n"
+                "\\foo\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False, remove_comments=True)
+
+        self.assertIn("\\newcommand{\\foo}{%\n", merged)
+        self.assertIn("  body%\n", merged)
+        self.assertIn("}%\n", merged)
+
+    def test_remove_comments_preserves_literal_environment_contents(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\begin{lstlisting}\n"
+                "% shown in listing\n"
+                "code % shown in listing\n"
+                "\\end{lstlisting}\n"
+                "Text after. % removed\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False, remove_comments=True)
+
+        self.assertIn("% shown in listing", merged)
+        self.assertIn("code % shown in listing", merged)
+        self.assertIn("Text after.\n", merged)
+        self.assertNotIn("removed", merged)
+
+    def test_remove_comments_deletes_comment_environment_but_keeps_package_line(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\usepackage{comment}\n"
+                "\\begin{document}\n"
+                "Before.\n"
+                "\\begin{comment}\n"
+                "Hidden text.\n"
+                "\\end{comment}\n"
+                "After.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False, remove_comments=True)
+
+        self.assertIn("\\usepackage{comment}", merged)
+        self.assertIn("Before.", merged)
+        self.assertIn("After.", merged)
+        self.assertNotIn("\\begin{comment}", merged)
+        self.assertNotIn("Hidden text.", merged)
+        self.assertNotIn("\\end{comment}", merged)
+
+
 class CliTests(unittest.TestCase):
     def test_arxiv_codes_downloads_and_merges_each_code_once(self):
         args = SimpleNamespace(
@@ -283,6 +391,7 @@ class CliTests(unittest.TestCase):
             demacro=False,
             remove_src=False,
             no_bib=False,
+            remove_comments=False,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -306,6 +415,7 @@ class CliTests(unittest.TestCase):
             "1234.56789/main.tex",
             remove_src=False,
             merge_bib=True,
+            remove_comments=False,
         )
 
 

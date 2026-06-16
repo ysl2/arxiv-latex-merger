@@ -25,6 +25,7 @@ def main(args):
             main_tex_path,
             remove_src=args.remove_src,
             merge_bib=not getattr(args, 'no_bib', False),
+            remove_comments=getattr(args, 'remove_comments', False),
         )
         
         output_tex_path = f'{code}.tex'
@@ -58,5 +59,6 @@ def cli():
     parser.add_argument('--demacro', action='store_true', default=False, help='(Experimental/Buggy) Attempt to de-macro custom commands defined in the merged file.')
     parser.add_argument('--remove_src', action='store_true', default=False, help='Remove source folder after successful merging.')
     parser.add_argument('--no_bib', action='store_true', default=False, help='Do not inline the generated .bbl bibliography in the merged file.')
+    parser.add_argument('--remove_comments', action='store_true', default=False, help='Remove LaTeX comments from the merged file while preserving syntax-sensitive percent characters.')
     args = parser.parse_args()
     main(args)
