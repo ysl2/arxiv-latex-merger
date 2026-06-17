@@ -89,26 +89,29 @@ def _replace_active_matches(line, matches, replacement):
     return ''.join(output_parts)
 
 
-def _tex_path(file_path):
-    if file_path.endswith('.tex'):
-        return file_path
+def _input_path_candidates(file_path):
+    yield file_path
 
-    return f"{file_path}.tex"
+    if not os.path.splitext(file_path)[1]:
+        yield f"{file_path}.tex"
 
 
 def _resolve_input_file_path(input_relative_path, file_dir, root_dir):
     if os.path.isabs(input_relative_path):
-        input_file_path = _tex_path(os.path.normpath(input_relative_path))
+        input_file_path = os.path.normpath(input_relative_path)
     else:
-        input_file_path = _tex_path(os.path.normpath(os.path.join(root_dir, input_relative_path)))
+        input_file_path = os.path.normpath(os.path.join(root_dir, input_relative_path))
 
-    if os.path.isfile(input_file_path):
-        return input_file_path
+    candidate_paths = list(_input_path_candidates(input_file_path))
+    for candidate_path in candidate_paths:
+        if os.path.isfile(candidate_path):
+            return candidate_path
 
+    expected_paths = ', '.join(candidate_paths)
     root_display = root_dir or '.'
     raise FileNotFoundError(
         f"Could not resolve \\input{{{input_relative_path}}} from {file_dir}. "
-        f"Expected {input_file_path} relative to {root_display}."
+        f"Expected {expected_paths} relative to {root_display}."
     )
 
 

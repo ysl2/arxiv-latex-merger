@@ -63,6 +63,29 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("After subsection.", merged)
         self.assertNotIn("\\input{subsection}", merged)
 
+    def test_input_with_explicit_non_tex_extension_is_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{references.bbl}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "references.bbl").write_text(
+                "\\begin{thebibliography}{1}\n"
+                "\\bibitem{key} Reference text.\n"
+                "\\end{thebibliography}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\begin{thebibliography}{1}", merged)
+        self.assertIn("\\bibitem{key} Reference text.", merged)
+        self.assertNotIn("\\input{references.bbl}", merged)
+
     def test_escaped_percent_does_not_comment_out_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
