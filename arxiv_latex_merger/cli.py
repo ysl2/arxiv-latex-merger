@@ -13,17 +13,21 @@ def main(args):
     print(f"arxiv_latex_merger {__version__}")
 
     if args.arxiv_codes:
+        local_main_tex_paths = {}
         for code in args.arxiv_codes:
-            if getattr(args, 'skip_download_if_exists', False) and Path(code).is_dir():
+            local_main_tex_path = _find_local_main_tex_file(code) if getattr(args, 'skip_download_if_exists', False) else None
+            if local_main_tex_path:
                 print(f"Local source directory exists for {code}; skipping download.")
+                local_main_tex_paths[code] = local_main_tex_path
             else:
                 download_arxiv_source_files(code)
     else:
         print(f"Downloading {args.n_random} random arXiv paper(s)...")
         args.arxiv_codes = download_random_arxiv_papers(args.n_random)
+        local_main_tex_paths = {}
 
     for code in args.arxiv_codes:
-        main_tex_path = find_main_tex_file(code)
+        main_tex_path = local_main_tex_paths.get(code) or find_main_tex_file(code)
 
         merged_tex_content, _encoding = merge_tex_files(
             main_tex_path,
@@ -54,6 +58,17 @@ def main(args):
                 print(f"Could not demacro files for {code}: {e}")
             
         print(f"Finished processing {code}.")
+
+
+def _find_local_main_tex_file(code):
+    if not Path(code).is_dir():
+        return None
+
+    try:
+        return find_main_tex_file(code)
+    except FileNotFoundError:
+        print(f"Local source directory exists for {code}, but no main .tex file was found; downloading again.")
+        return None
 
 
 def cli():

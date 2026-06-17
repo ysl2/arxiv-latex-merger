@@ -553,6 +553,44 @@ class CliTests(unittest.TestCase):
         download_mock.assert_called_once_with("1234.56789")
         find_mock.assert_called_once_with("1234.56789")
 
+    def test_skip_download_if_exists_downloads_when_existing_directory_has_no_main_tex(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1234.56789").mkdir()
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch(
+                        "arxiv_latex_merger.cli.find_main_tex_file",
+                        side_effect=[
+                            FileNotFoundError("No main .tex file found"),
+                            "1234.56789/main.tex",
+                        ],
+                    ) as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
+                            stdout = io.StringIO()
+                            with redirect_stdout(stdout):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((root / "1234.56789.tex").read_text(), "merged")
+
+        download_mock.assert_called_once_with("1234.56789")
+        self.assertEqual(find_mock.call_count, 2)
+        self.assertIn("downloading again", stdout.getvalue())
+
     def test_skip_download_if_exists_is_checked_per_code(self):
         args = SimpleNamespace(
             arxiv_codes=["1111.11111", "2222.22222"],
