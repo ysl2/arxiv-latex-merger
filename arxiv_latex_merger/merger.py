@@ -92,7 +92,7 @@ def _replace_active_matches(line, matches, replacement):
 def _input_path_candidates(file_path):
     yield file_path
 
-    if not os.path.splitext(file_path)[1]:
+    if not file_path.endswith('.tex'):
         yield f"{file_path}.tex"
 
 

@@ -86,6 +86,27 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\bibitem{key} Reference text.", merged)
         self.assertNotIn("\\input{references.bbl}", merged)
 
+    def test_input_with_dotted_tex_basename_is_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{sections/appendix.implementation}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "appendix.implementation.tex").write_text(
+                "Implementation details.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Implementation details.", merged)
+        self.assertNotIn("\\input{sections/appendix.implementation}", merged)
+
     def test_escaped_percent_does_not_comment_out_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
