@@ -6,7 +6,7 @@ __author__='iokarkan'
 import argparse
 from pathlib import Path
 from .merger import merge_tex_files, find_main_tex_file
-from .downloader import download_arxiv_source_files, download_random_arxiv_papers
+from .downloader import SourceDownloadError, download_arxiv_source_files, download_random_arxiv_papers
 from .demacro import LatexDemacro
 
 def main(args):
@@ -14,13 +14,21 @@ def main(args):
 
     if args.arxiv_codes:
         local_main_tex_paths = {}
+        available_arxiv_codes = []
         for code in args.arxiv_codes:
             local_main_tex_path = _find_local_main_tex_file(code) if getattr(args, 'skip_download_if_exists', False) else None
             if local_main_tex_path:
                 print(f"Local source directory exists for {code}; skipping download.")
                 local_main_tex_paths[code] = local_main_tex_path
             else:
-                download_arxiv_source_files(code)
+                try:
+                    download_arxiv_source_files(code)
+                except SourceDownloadError as error:
+                    print(f"Skipping {code}: {error}")
+                    continue
+
+            available_arxiv_codes.append(code)
+        args.arxiv_codes = available_arxiv_codes
     else:
         print(f"Downloading {args.n_random} random arXiv paper(s)...")
         args.arxiv_codes = download_random_arxiv_papers(args.n_random)

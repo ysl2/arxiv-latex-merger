@@ -626,6 +626,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(find_mock.call_count, 2)
         self.assertEqual(merge_mock.call_count, 2)
 
+    def test_source_download_error_skips_code_and_continues(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1111.11111", "2222.22222"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+        )
+
+        def fake_download(code):
+            if code == "1111.11111":
+                raise downloader_module.SourceDownloadError("no source archive")
+
+        def fake_find_main_tex_file(code):
+            return f"{code}/main.tex"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", side_effect=fake_download) as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", side_effect=fake_find_main_tex_file) as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")) as merge_mock:
+                            stdout = io.StringIO()
+                            with redirect_stdout(stdout):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1111.11111.tex").exists())
+            self.assertEqual((root / "2222.22222.tex").read_text(), "merged")
+
+        self.assertEqual(download_mock.call_count, 2)
+        find_mock.assert_called_once_with("2222.22222")
+        merge_mock.assert_called_once()
+        self.assertIn("Skipping 1111.11111", stdout.getvalue())
+
 
 class DownloaderTests(unittest.TestCase):
     def test_download_arxiv_source_files_reports_download_progress(self):
@@ -671,3 +711,35 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("Downloading source files for 1234.56789...", output)
         self.assertIn("Downloading source for 1234.56789", stderr.getvalue())
         get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
+
+    def test_download_arxiv_source_files_reports_non_archive_source(self):
+        pdf_payload = b"%PDF-1.7\n"
+
+        class FakeResponse:
+            headers = {"content-length": str(len(pdf_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield pdf_payload
+
+        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                            with redirect_stderr(io.StringIO()):
+                                downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertTrue(output_dir.exists())
+            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
+
+        self.assertIn("not a gzipped tar archive", str(error.exception))

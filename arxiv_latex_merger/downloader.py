@@ -9,6 +9,10 @@ import requests
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?{}"
 
 
+class SourceDownloadError(RuntimeError):
+    pass
+
+
 def _arxiv_results(search):
     client = arxiv.Client()
     client.query_url_format = ARXIV_QUERY_URL
@@ -63,17 +67,23 @@ def download_arxiv_source_files(arxiv_code):
         desc=f"Downloading source for {arxiv_code}",
     )
 
-    # Extract the tar file to the output directory
-    with tarfile.open(tar_file, "r:gz") as tar:
-        members = tar.getmembers()
-        with tqdm(
-            total=len(members),
-            unit="file",
-            desc=f"Extracting source files for {arxiv_code}",
-        ) as progress_bar:
-            for member in members:
-                tar.extract(member, output_dir)
-                progress_bar.update(1)
+    try:
+        with tarfile.open(tar_file, "r:gz") as tar:
+            members = tar.getmembers()
+            with tqdm(
+                total=len(members),
+                unit="file",
+                desc=f"Extracting source files for {arxiv_code}",
+            ) as progress_bar:
+                for member in members:
+                    tar.extract(member, output_dir)
+                    progress_bar.update(1)
+    except tarfile.TarError as error:
+        os.remove(tar_file)
+        raise SourceDownloadError(
+            f"Downloaded source for {arxiv_code} was not a gzipped tar archive. "
+            "arXiv may only provide a PDF for this paper."
+        ) from error
 
     # Remove the tar file
     os.remove(tar_file)
