@@ -96,13 +96,48 @@ def _input_path_candidates(file_path):
         yield f"{file_path}.tex"
 
 
-def _resolve_input_file_path(input_relative_path, file_dir, root_dir):
-    if os.path.isabs(input_relative_path):
-        input_file_path = os.path.normpath(input_relative_path)
-    else:
-        input_file_path = os.path.normpath(os.path.join(root_dir, input_relative_path))
+def _find_source_root_dir(start_dir):
+    current_dir = os.path.abspath(start_dir or '.')
 
-    candidate_paths = list(_input_path_candidates(input_file_path))
+    while True:
+        if os.path.isfile(os.path.join(current_dir, '00README.json')):
+            return current_dir
+
+        parent_dir = os.path.dirname(current_dir)
+        if parent_dir == current_dir:
+            return os.path.abspath(start_dir or '.')
+
+        current_dir = parent_dir
+
+
+def _deduplicate_paths(paths):
+    seen_paths = set()
+
+    for path in paths:
+        normalized_path = os.path.abspath(path)
+        if normalized_path in seen_paths:
+            continue
+
+        seen_paths.add(normalized_path)
+        yield path
+
+
+def _input_base_path_candidates(input_relative_path, root_dir, source_root_dir):
+    if os.path.isabs(input_relative_path):
+        return [os.path.normpath(input_relative_path)]
+
+    return list(_deduplicate_paths([
+        os.path.normpath(os.path.join(root_dir, input_relative_path)),
+        os.path.normpath(os.path.join(source_root_dir, input_relative_path)),
+    ]))
+
+
+def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
+    candidate_paths = []
+    for base_path in _input_base_path_candidates(input_relative_path, root_dir, source_root_dir):
+        candidate_paths.extend(_input_path_candidates(base_path))
+
+    candidate_paths = list(_deduplicate_paths(candidate_paths))
     for candidate_path in candidate_paths:
         if os.path.isfile(candidate_path):
             return candidate_path
@@ -115,9 +150,11 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir):
     )
 
 
-def process_input_commands(file_lines, file_dir, root_dir=None):
+def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=None):
     if root_dir is None:
         root_dir = file_dir
+    if source_root_dir is None:
+        source_root_dir = _find_source_root_dir(root_dir)
 
     input_pattern = re.compile(r'\\input\{(.+?)\}')
     output_lines = []
@@ -135,11 +172,11 @@ def process_input_commands(file_lines, file_dir, root_dir=None):
         for match in input_matches:
             line_parts.append(line[previous_end:match.start()])
             input_relative_path = match.group(1).replace('\\', '/')
-            input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir)
+            input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
             input_file_dir = os.path.dirname(input_file_path)
             input_file_lines, _ = read_tex_file(input_file_path)
 
-            input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir)
+            input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir, source_root_dir)
             line_parts.append(''.join(input_file_content))
             previous_end = match.end()
 

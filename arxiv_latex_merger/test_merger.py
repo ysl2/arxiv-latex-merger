@@ -154,6 +154,32 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("After table.", merged)
         self.assertNotIn("\\input{camera-ready/tab/results}", merged)
 
+    def test_inputs_can_resolve_paths_relative_to_source_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "00README.json").write_text(
+                '{"sources":[{"usage":"toplevel","filename":"paper/main.tex"}]}',
+                encoding="utf-8",
+            )
+            (root / "paper").mkdir()
+            (root / "section").mkdir()
+            (root / "paper" / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{section/abs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section" / "abs.tex").write_text(
+                "Abstract body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "paper" / "main.tex"), merge_bib=False)
+
+        self.assertIn("Abstract body.", merged)
+        self.assertNotIn("\\input{section/abs}", merged)
+
     def test_nested_inputs_do_not_fallback_to_child_file_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
