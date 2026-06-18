@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 def read_tex_file(file_path):
@@ -395,6 +396,62 @@ def _active_bibliography_commands(file_lines):
     return commands
 
 
+def _active_bibliography_style(file_lines):
+    bibliography_style_pattern = re.compile(r'\\bibliographystyle\{(.+?)\}')
+
+    for line in file_lines:
+        for match in _active_pattern_matches(bibliography_style_pattern, line):
+            style = match.group(1).strip()
+            if style:
+                return style
+
+    return 'plain'
+
+
+_CITATION_COMMAND_NAMES = [
+    'cite',
+    'citep',
+    'citet',
+    'citealp',
+    'citealt',
+    'citeauthor',
+    'citeyear',
+    'citeyearpar',
+    'citepalias',
+    'citetalias',
+    'Citep',
+    'Citet',
+    'shortcite',
+    'nocite',
+]
+
+
+def _active_citation_keys(file_lines):
+    citation_pattern = re.compile(
+        r'\\(?:' + '|'.join(_CITATION_COMMAND_NAMES) + r')\*?\s*(?:\[[^\]]*\]\s*)*\{([^{}]+)\}'
+    )
+    citation_keys = []
+
+    for line in file_lines:
+        for match in _active_pattern_matches(citation_pattern, line):
+            for key in match.group(1).split(','):
+                key = key.strip()
+                if key:
+                    citation_keys.append(key)
+
+    return list(_deduplicate_paths(citation_keys))
+
+
+def _has_biblatex_commands(file_lines):
+    biblatex_pattern = re.compile(r'\\(?:addbibresource|printbibliography)\b')
+
+    for line in file_lines:
+        if any(_active_pattern_matches(biblatex_pattern, line)):
+            return True
+
+    return False
+
+
 def _bibliography_path_candidates_with_work_dirs(bib_name, root_dir, source_root_dir):
     bib_name = bib_name.strip().replace('\\', '/')
     if not bib_name:
@@ -439,6 +496,23 @@ def _bibliography_source_work_dirs(bibliography_commands, root_dir, source_root_
                     break
 
     return list(_deduplicate_paths(source_work_dirs))
+
+
+def _bibliography_file_paths(bibliography_commands, root_dir, source_root_dir):
+    bibliography_file_paths = []
+
+    for command in bibliography_commands:
+        for bib_name in command.split(','):
+            for bib_path, _work_dir in _bibliography_path_candidates_with_work_dirs(
+                bib_name,
+                root_dir,
+                source_root_dir,
+            ):
+                if os.path.isfile(bib_path):
+                    bibliography_file_paths.append(bib_path)
+                    break
+
+    return list(_deduplicate_paths(bibliography_file_paths))
 
 
 def _bbl_file_path_candidates(main_tex_path, source_root_dir):
@@ -514,7 +588,7 @@ def _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=None)
                 capture_output=True,
             )
         except FileNotFoundError:
-            print("Warning: latexmk was not found; bibliography could not be inlined.")
+            print("Warning: latexmk was not found; trying BibTeX fallback.")
             return False
 
         if result.returncode == 0:
@@ -522,9 +596,93 @@ def _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=None)
             break
 
     if not any_success:
-        print(f"Warning: latexmk failed for {main_tex_path}; bibliography could not be inlined.")
+        print(f"Warning: latexmk failed for {main_tex_path}; trying BibTeX fallback.")
 
     return any_success
+
+
+def _prepend_tex_search_paths(env, variable_name, paths):
+    existing_value = env.get(variable_name)
+    search_paths = []
+
+    for path in paths:
+        if not path:
+            continue
+
+        absolute_path = os.path.abspath(path)
+        if absolute_path not in search_paths:
+            search_paths.append(absolute_path)
+
+    if existing_value:
+        search_paths.append(existing_value)
+    else:
+        search_paths.append('')
+
+    env[variable_name] = os.pathsep.join(search_paths)
+
+
+def _generate_bbl_file_with_bibtex_fallback(file_lines, main_tex_path, source_root_dir, bibliography_commands):
+    if _has_biblatex_commands(file_lines):
+        return False
+
+    citation_keys = _active_citation_keys(file_lines)
+    if not citation_keys:
+        return False
+
+    main_tex_dir = os.path.dirname(main_tex_path)
+    bib_file_paths = _bibliography_file_paths(bibliography_commands, main_tex_dir, source_root_dir)
+    if not bib_file_paths:
+        return False
+
+    bibliography_style = _active_bibliography_style(file_lines)
+    aux_base_name = 'arxiv_latex_merger_bibtex_fallback'
+
+    with tempfile.TemporaryDirectory(prefix='arxiv_latex_merger_bibtex_') as temp_dir:
+        bibdata_names = []
+        for index, bib_file_path in enumerate(bib_file_paths):
+            bibdata_name = f'bib_{index}'
+            shutil.copyfile(bib_file_path, os.path.join(temp_dir, f'{bibdata_name}.bib'))
+            bibdata_names.append(bibdata_name)
+
+        aux_path = os.path.join(temp_dir, f'{aux_base_name}.aux')
+        with open(aux_path, 'w', encoding='utf-8') as aux_file:
+            aux_file.write('\\relax\n')
+            for citation_key in citation_keys:
+                aux_file.write(f'\\citation{{{citation_key}}}\n')
+            aux_file.write(f'\\bibstyle{{{bibliography_style}}}\n')
+            aux_file.write(f'\\bibdata{{{",".join(bibdata_names)}}}\n')
+
+        env = os.environ.copy()
+        bibtex_search_dirs = [temp_dir, main_tex_dir, source_root_dir]
+        bibtex_search_dirs.extend(os.path.dirname(path) for path in bib_file_paths)
+        _prepend_tex_search_paths(env, 'BIBINPUTS', bibtex_search_dirs)
+        _prepend_tex_search_paths(env, 'BSTINPUTS', bibtex_search_dirs)
+
+        try:
+            result = subprocess.run(
+                ['bibtex', aux_base_name],
+                cwd=temp_dir,
+                check=False,
+                capture_output=True,
+                env=env,
+            )
+        except FileNotFoundError:
+            print("Warning: bibtex was not found; bibliography could not be inlined.")
+            return False
+
+        if result.returncode != 0:
+            print(f"Warning: bibtex fallback failed for {main_tex_path}; bibliography could not be inlined.")
+            return False
+
+        fallback_bbl_path = os.path.join(temp_dir, f'{aux_base_name}.bbl')
+        if not os.path.isfile(fallback_bbl_path):
+            print(f"Warning: bibtex fallback did not produce a .bbl file for {main_tex_path}.")
+            return False
+
+        target_bbl_path = _bbl_file_path_candidates(main_tex_path, source_root_dir)[0]
+        shutil.copyfile(fallback_bbl_path, target_bbl_path)
+
+    return True
 
 
 def process_bibliography_commands(file_lines, main_tex_path):
@@ -547,6 +705,14 @@ def process_bibliography_commands(file_lines, main_tex_path):
         if bibliography_work_dirs:
             _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=bibliography_work_dirs)
             bbl_file_path = _first_existing_path(bbl_file_paths)
+            if not bbl_file_path:
+                _generate_bbl_file_with_bibtex_fallback(
+                    file_lines,
+                    main_tex_path,
+                    source_root_dir,
+                    bibliography_commands,
+                )
+                bbl_file_path = _first_existing_path(bbl_file_paths)
         else:
             print(f"Warning: bibliography command found in {main_tex_path}, but no .bib file was found.")
 

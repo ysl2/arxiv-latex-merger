@@ -558,12 +558,112 @@ class MergerBibliographyTests(unittest.TestCase):
         self.assertNotIn("\\bibliography{refs}", merged)
         self.assertNotIn("\\bibliographystyle{plain}", merged)
 
+    def test_latexmk_failure_falls_back_to_bibtex(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "Cite \\citep[see][chap. 2]{alpha, beta} and \\citet{gamma}.\n"
+                "% \\cite{commented}\n"
+                "\\bibliographystyle{plain}\n"
+                "\\bibliography{refs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "refs.bib").write_text(
+                "@article{alpha, title={Alpha}, author={Author}, year={2024}}\n"
+                "@article{beta, title={Beta}, author={Author}, year={2024}}\n"
+                "@article{gamma, title={Gamma}, author={Author}, year={2024}}\n",
+                encoding="utf-8",
+            )
+
+            def fake_run(args, **kwargs):
+                if args[0] == "latexmk":
+                    return subprocess.CompletedProcess(args=args, returncode=1)
+
+                self.assertEqual(args, ["bibtex", "arxiv_latex_merger_bibtex_fallback"])
+                fallback_root = Path(kwargs["cwd"])
+                aux_content = (fallback_root / "arxiv_latex_merger_bibtex_fallback.aux").read_text(
+                    encoding="utf-8",
+                )
+                self.assertIn("\\citation{alpha}", aux_content)
+                self.assertIn("\\citation{beta}", aux_content)
+                self.assertIn("\\citation{gamma}", aux_content)
+                self.assertNotIn("commented", aux_content)
+                self.assertIn("\\bibstyle{plain}", aux_content)
+                self.assertIn("\\bibdata{bib_0}", aux_content)
+                self.assertTrue((fallback_root / "bib_0.bib").is_file())
+                (fallback_root / "arxiv_latex_merger_bibtex_fallback.bbl").write_text(
+                    "\\begin{thebibliography}{1}\n"
+                    "\\bibitem{alpha} Alpha reference.\n"
+                    "\\bibitem{beta} Beta reference.\n"
+                    "\\bibitem{gamma} Gamma reference.\n"
+                    "\\end{thebibliography}\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=args, returncode=0)
+
+            with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run) as run_mock:
+                merged, _ = merge_tex_files(str(root / "main.tex"))
+
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertIn("\\bibitem{alpha} Alpha reference.", merged)
+        self.assertIn("\\bibitem{beta} Beta reference.", merged)
+        self.assertIn("\\bibitem{gamma} Gamma reference.", merged)
+        self.assertNotIn("\\bibliography{refs}", merged)
+        self.assertNotIn("\\bibliographystyle{plain}", merged)
+
+    def test_bibtex_fallback_handles_multiple_bib_files_and_nocite_all(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\nocite{*}\n"
+                "\\bibliography{refs,more_refs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "refs.bib").write_text("@article{alpha, title={Alpha}}\n", encoding="utf-8")
+            (root / "more_refs.bib").write_text("@article{beta, title={Beta}}\n", encoding="utf-8")
+
+            def fake_run(args, **kwargs):
+                if args[0] == "latexmk":
+                    return subprocess.CompletedProcess(args=args, returncode=1)
+
+                fallback_root = Path(kwargs["cwd"])
+                aux_content = (fallback_root / "arxiv_latex_merger_bibtex_fallback.aux").read_text(
+                    encoding="utf-8",
+                )
+                self.assertIn("\\citation{*}", aux_content)
+                self.assertIn("\\bibstyle{plain}", aux_content)
+                self.assertIn("\\bibdata{bib_0,bib_1}", aux_content)
+                self.assertTrue((fallback_root / "bib_0.bib").is_file())
+                self.assertTrue((fallback_root / "bib_1.bib").is_file())
+                (fallback_root / "arxiv_latex_merger_bibtex_fallback.bbl").write_text(
+                    "\\begin{thebibliography}{1}\n"
+                    "\\bibitem{alpha} Alpha reference.\n"
+                    "\\bibitem{beta} Beta reference.\n"
+                    "\\end{thebibliography}\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=args, returncode=0)
+
+            with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run):
+                merged, _ = merge_tex_files(str(root / "main.tex"))
+
+        self.assertIn("\\bibitem{alpha} Alpha reference.", merged)
+        self.assertIn("\\bibitem{beta} Beta reference.", merged)
+        self.assertNotIn("\\bibliography{refs,more_refs}", merged)
+
     def test_missing_bbl_generation_failure_warns_and_preserves_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "main.tex").write_text(
                 "\\documentclass{article}\n"
                 "\\begin{document}\n"
+                "Cite \\cite{key}.\n"
                 "\\bibliographystyle{plain}\n"
                 "\\bibliography{refs}\n"
                 "\\end{document}\n",
@@ -573,10 +673,11 @@ class MergerBibliographyTests(unittest.TestCase):
 
             stdout = io.StringIO()
             failed = subprocess.CompletedProcess(args=["latexmk"], returncode=1, stderr=b"failed")
-            with patch("arxiv_latex_merger.merger.subprocess.run", return_value=failed):
+            with patch("arxiv_latex_merger.merger.subprocess.run", return_value=failed) as run_mock:
                 with redirect_stdout(stdout):
                     merged, _ = merge_tex_files(str(root / "main.tex"))
 
+        self.assertEqual(run_mock.call_count, 2)
         self.assertIn("Warning:", stdout.getvalue())
         self.assertIn("\\bibliographystyle{plain}", merged)
         self.assertIn("\\bibliography{refs}", merged)
