@@ -23,6 +23,16 @@ def _source_url_for_paper(paper):
     return paper.pdf_url.replace('/pdf/', '/src/')
 
 
+def _metadata_for_arxiv_code(arxiv_code):
+    try:
+        papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
+        return next(papers)
+    except StopIteration as error:
+        raise SourceDownloadError(f"No arXiv metadata was found for {arxiv_code}.") from error
+    except Exception as error:
+        raise SourceDownloadError(f"Could not fetch arXiv metadata for {arxiv_code}: {error}") from error
+
+
 def _download_file_with_progress(url, path, desc):
     response = requests.get(url, stream=True)
     response.raise_for_status()
@@ -55,8 +65,7 @@ def download_arxiv_source_files(arxiv_code):
 
     # Use arxiv API to get the paper object
     print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
-    papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
-    paper = next(papers)
+    paper = _metadata_for_arxiv_code(arxiv_code)
 
     # Download the source files.
     tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")

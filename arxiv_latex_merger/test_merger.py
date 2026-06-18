@@ -687,6 +687,44 @@ class CliTests(unittest.TestCase):
         merge_mock.assert_called_once()
         self.assertIn("Skipping 1111.11111", stdout.getvalue())
 
+    def test_metadata_error_skips_code_and_continues(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1111.11111", "2222.22222"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+        )
+
+        def fake_download(code):
+            if code == "1111.11111":
+                raise downloader_module.SourceDownloadError(
+                    "Could not fetch arXiv metadata for 1111.11111: object has no attribute 'status'"
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", side_effect=fake_download) as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="2222.22222/main.tex") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
+                            stdout = io.StringIO()
+                            with redirect_stdout(stdout):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1111.11111.tex").exists())
+            self.assertEqual((root / "2222.22222.tex").read_text(), "merged")
+
+        self.assertEqual(download_mock.call_count, 2)
+        find_mock.assert_called_once_with("2222.22222")
+        self.assertIn("object has no attribute 'status'", stdout.getvalue())
+
 
 class DownloaderTests(unittest.TestCase):
     def test_download_arxiv_source_files_reports_download_progress(self):
@@ -764,3 +802,24 @@ class DownloaderTests(unittest.TestCase):
             self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
 
         self.assertIn("not a gzipped tar archive", str(error.exception))
+
+    def test_download_arxiv_source_files_reports_metadata_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader._arxiv_results",
+                    side_effect=AttributeError("object has no attribute 'status'"),
+                ):
+                    with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                        downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertTrue(output_dir.exists())
+            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
+
+        self.assertIn("Could not fetch arXiv metadata for 1234.56789", str(error.exception))
+        self.assertIn("object has no attribute 'status'", str(error.exception))
