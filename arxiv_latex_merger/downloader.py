@@ -1,26 +1,85 @@
 import os
 import random
 import tarfile
+import time
+from math import isinf
+from urllib.parse import urlencode
 import arxiv
+import feedparser
 from pathlib import Path
 from tqdm import tqdm
 import requests
 
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query?{}"
+ARXIV_METADATA_MAX_ATTEMPTS = 4
+ARXIV_METADATA_RETRY_DELAY_SECONDS = 5
+ARXIV_METADATA_TIMEOUT_SECONDS = 20
+ARXIV_TRANSIENT_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 
 
 class SourceDownloadError(RuntimeError):
     pass
 
 
+class ArxivMetadataTimeoutError(RuntimeError):
+    pass
+
+
+class ArxivMetadataUnexpectedEmptyPageError(RuntimeError):
+    pass
+
+
+def _arxiv_search_url(search):
+    max_results = 1 if isinf(search.max_results) else int(search.max_results)
+    url_args = search._url_args()
+    url_args.update({
+        "start": 0,
+        "max_results": max_results,
+    })
+    return ARXIV_QUERY_URL.format(urlencode(url_args))
+
+
 def _arxiv_results(search):
-    client = arxiv.Client()
-    client.query_url_format = ARXIV_QUERY_URL
-    return client.results(search)
+    response = requests.get(_arxiv_search_url(search), timeout=ARXIV_METADATA_TIMEOUT_SECONDS)
+    if response.status_code != 200:
+        raise arxiv.HTTPError(response.url, 0, response.status_code)
+
+    feed = feedparser.parse(response.content)
+    if feed.bozo and not getattr(feed, "entries", None):
+        raise ArxivMetadataUnexpectedEmptyPageError("arXiv returned an unparseable metadata feed")
+
+    for entry in feed.entries:
+        yield arxiv.Result._from_feed_entry(entry)
+
+
+def _is_transient_arxiv_metadata_error(error):
+    if isinstance(error, arxiv.HTTPError):
+        return error.status in ARXIV_TRANSIENT_HTTP_STATUSES
+
+    if isinstance(error, arxiv.UnexpectedEmptyPageError):
+        return True
+
+    if isinstance(error, ArxivMetadataTimeoutError):
+        return True
+
+    if isinstance(error, ArxivMetadataUnexpectedEmptyPageError):
+        return True
+
+    if isinstance(error, requests.Timeout):
+        return True
+
+    if isinstance(error, requests.RequestException):
+        return True
+
+    return False
 
 
 def _source_url_for_paper(paper):
     return paper.pdf_url.replace('/pdf/', '/src/')
+
+
+def _source_url_for_arxiv_code(arxiv_code):
+    return f"https://arxiv.org/src/{arxiv_code}"
 
 
 def _arxiv_id_from_url(url):
@@ -37,6 +96,9 @@ def _arxiv_id_from_url(url):
 
 
 def _pdf_arxiv_id_for_paper(paper, fallback_arxiv_code):
+    if paper is None:
+        return fallback_arxiv_code
+
     for attribute_name in ('entry_id', 'pdf_url'):
         arxiv_id = _arxiv_id_from_url(getattr(paper, attribute_name, None))
         if arxiv_id:
@@ -46,13 +108,38 @@ def _pdf_arxiv_id_for_paper(paper, fallback_arxiv_code):
 
 
 def _metadata_for_arxiv_code(arxiv_code):
-    try:
-        papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
-        return next(papers)
-    except StopIteration as error:
-        raise SourceDownloadError(f"No arXiv metadata was found for {arxiv_code}.") from error
-    except Exception as error:
-        raise SourceDownloadError(f"Could not fetch arXiv metadata for {arxiv_code}: {error}") from error
+    for attempt in range(1, ARXIV_METADATA_MAX_ATTEMPTS + 1):
+        metadata_error = None
+        try:
+            papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
+            return next(papers)
+        except requests.Timeout as error:
+            metadata_error = ArxivMetadataTimeoutError(
+                f"Metadata request timed out after {ARXIV_METADATA_TIMEOUT_SECONDS} seconds"
+            )
+        except StopIteration as error:
+            raise SourceDownloadError(f"No arXiv metadata was found for {arxiv_code}.") from error
+        except Exception as error:
+            metadata_error = error
+
+        if (
+            attempt < ARXIV_METADATA_MAX_ATTEMPTS
+            and _is_transient_arxiv_metadata_error(metadata_error)
+        ):
+            print(
+                f"Transient arXiv metadata error for {arxiv_code}: {metadata_error}. "
+                f"Retrying in {ARXIV_METADATA_RETRY_DELAY_SECONDS} seconds "
+                f"({attempt}/{ARXIV_METADATA_MAX_ATTEMPTS})...",
+                flush=True,
+            )
+            time.sleep(ARXIV_METADATA_RETRY_DELAY_SECONDS)
+            continue
+
+        raise SourceDownloadError(
+            f"Could not fetch arXiv metadata for {arxiv_code}: {metadata_error}"
+        ) from metadata_error
+
+    raise SourceDownloadError(f"Could not fetch arXiv metadata for {arxiv_code}.")
 
 
 def _download_file_with_progress(url, path, desc):
@@ -107,16 +194,29 @@ def download_arxiv_source_files(arxiv_code):
     try:
         # Use arxiv API to get the paper object
         print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
-        paper = _metadata_for_arxiv_code(arxiv_code)
+        source_url = None
+        try:
+            paper = _metadata_for_arxiv_code(arxiv_code)
+            source_url = _source_url_for_paper(paper)
+        except SourceDownloadError as error:
+            if _is_transient_arxiv_metadata_error(error.__cause__):
+                print(
+                    f"{error} Downloading source directly from arXiv instead.",
+                    flush=True,
+                )
+                paper = None
+                source_url = _source_url_for_arxiv_code(arxiv_code)
+            else:
+                raise
 
-        # Create the output directory only after metadata is available.
+        # Create the output directory only after we know which source URL to use.
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         # Download the source files.
         tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
         print(f"Downloading source files for {arxiv_code}...", flush=True)
         _download_file_with_progress(
-            _source_url_for_paper(paper),
+            source_url,
             tar_file,
             desc=f"Downloading source for {arxiv_code}",
         )

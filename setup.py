@@ -6,6 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         'arxiv==1.3.0',
+        'feedparser',
     ],
     entry_points={
         'console_scripts': [
