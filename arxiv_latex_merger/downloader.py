@@ -23,6 +23,28 @@ def _source_url_for_paper(paper):
     return paper.pdf_url.replace('/pdf/', '/src/')
 
 
+def _arxiv_id_from_url(url):
+    if not url:
+        return None
+
+    arxiv_id = url.rstrip('/').rsplit('/', 1)[-1]
+    if arxiv_id.lower().endswith('.pdf'):
+        arxiv_id = arxiv_id[:-4]
+    if arxiv_id.startswith('arXiv-'):
+        arxiv_id = arxiv_id[len('arXiv-'):]
+
+    return arxiv_id or None
+
+
+def _pdf_arxiv_id_for_paper(paper, fallback_arxiv_code):
+    for attribute_name in ('entry_id', 'pdf_url'):
+        arxiv_id = _arxiv_id_from_url(getattr(paper, attribute_name, None))
+        if arxiv_id:
+            return arxiv_id
+
+    return fallback_arxiv_code
+
+
 def _metadata_for_arxiv_code(arxiv_code):
     try:
         papers = _arxiv_results(arxiv.Search(id_list=[arxiv_code]))
@@ -57,6 +79,18 @@ def _download_file_with_progress(url, path, desc):
                     progress_bar.update(len(chunk))
 
 
+def _is_pdf_file(path):
+    with open(path, 'rb') as downloaded_file:
+        return downloaded_file.read(4) == b'%PDF'
+
+
+def _move_downloaded_pdf(downloaded_path, output_dir, paper, arxiv_code):
+    pdf_arxiv_id = _pdf_arxiv_id_for_paper(paper, arxiv_code).replace('/', '_')
+    pdf_path = os.path.join(output_dir, f"{pdf_arxiv_id}.pdf")
+    os.replace(downloaded_path, pdf_path)
+    return pdf_path
+
+
 def _remove_output_dir_if_empty(output_dir):
     try:
         Path(output_dir).rmdir()
@@ -86,6 +120,12 @@ def download_arxiv_source_files(arxiv_code):
             tar_file,
             desc=f"Downloading source for {arxiv_code}",
         )
+
+        if _is_pdf_file(tar_file):
+            pdf_path = _move_downloaded_pdf(tar_file, output_dir, paper, arxiv_code)
+            raise SourceDownloadError(
+                f"arXiv returned a PDF instead of source files. Saved PDF to {pdf_path}."
+            )
 
         try:
             with tarfile.open(tar_file, "r:gz") as tar:

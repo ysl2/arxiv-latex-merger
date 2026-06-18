@@ -16,6 +16,11 @@ def main(args):
         local_main_tex_paths = {}
         available_arxiv_codes = []
         for code in args.arxiv_codes:
+            local_pdf_path = _find_local_pdf_only_file(code) if getattr(args, 'skip_download_if_exists', False) else None
+            if local_pdf_path:
+                print(f"Local PDF-only source exists for {code} at {local_pdf_path}; skipping download and merge.")
+                continue
+
             local_main_tex_path = _find_local_main_tex_file(code) if getattr(args, 'skip_download_if_exists', False) else None
             if local_main_tex_path:
                 print(f"Local source directory exists for {code}; skipping download.")
@@ -77,6 +82,22 @@ def _find_local_main_tex_file(code):
     except FileNotFoundError:
         print(f"Local source directory exists for {code}, but no main .tex file was found; downloading again.")
         return None
+
+
+def _find_local_pdf_only_file(code):
+    source_dir = Path(code)
+    if not source_dir.is_dir():
+        return None
+
+    file_paths = [path for path in source_dir.rglob('*') if path.is_file()]
+    if any(path.suffix.lower() == '.tex' for path in file_paths):
+        return None
+
+    pdf_paths = sorted(path for path in file_paths if path.suffix.lower() == '.pdf')
+    if not pdf_paths:
+        return None
+
+    return str(pdf_paths[0])
 
 
 def cli():

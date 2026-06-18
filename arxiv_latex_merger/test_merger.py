@@ -612,6 +612,80 @@ class CliTests(unittest.TestCase):
         self.assertEqual(find_mock.call_count, 2)
         self.assertIn("downloading again", stdout.getvalue())
 
+    def test_skip_download_if_exists_skips_existing_pdf_only_directory(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "1234.56789"
+            source_dir.mkdir()
+            (source_dir / "1234.56789v1.pdf").write_bytes(b"%PDF-1.7\n")
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", side_effect=FileNotFoundError("No main .tex file found")) as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files") as merge_mock:
+                            stdout = io.StringIO()
+                            with redirect_stdout(stdout):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1234.56789.tex").exists())
+
+        download_mock.assert_not_called()
+        find_mock.assert_not_called()
+        merge_mock.assert_not_called()
+        self.assertIn("Local PDF-only source exists for 1234.56789", stdout.getvalue())
+
+    def test_skip_download_if_exists_prefers_existing_tex_over_pdf(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "1234.56789"
+            source_dir.mkdir()
+            (source_dir / "1234.56789v1.pdf").write_bytes(b"%PDF-1.7\n")
+            (source_dir / "main.tex").write_text("\\documentclass{article}\n", encoding="utf-8")
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789/main.tex") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")) as merge_mock:
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((root / "1234.56789.tex").read_text(), "merged")
+
+        download_mock.assert_not_called()
+        find_mock.assert_called_once_with("1234.56789")
+        merge_mock.assert_called_once_with(
+            "1234.56789/main.tex",
+            remove_src=False,
+            merge_bib=True,
+            remove_comments=False,
+        )
+
     def test_skip_download_if_exists_is_checked_per_code(self):
         args = SimpleNamespace(
             arxiv_codes=["1111.11111", "2222.22222"],
@@ -771,7 +845,7 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("Downloading source for 1234.56789", stderr.getvalue())
         get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
 
-    def test_download_arxiv_source_files_reports_non_archive_source(self):
+    def test_download_arxiv_source_files_saves_pdf_source_and_skips_merge(self):
         pdf_payload = b"%PDF-1.7\n"
 
         class FakeResponse:
@@ -783,7 +857,10 @@ class DownloaderTests(unittest.TestCase):
             def iter_content(self, chunk_size):
                 yield pdf_payload
 
-        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
+        paper = SimpleNamespace(
+            entry_id="https://arxiv.org/abs/1234.56789v2",
+            pdf_url="https://arxiv.org/pdf/1234.56789v2",
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
@@ -798,9 +875,41 @@ class DownloaderTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
             output_dir = Path(temp_dir) / "1234.56789"
-            self.assertFalse(output_dir.exists())
+            pdf_path = output_dir / "1234.56789v2.pdf"
+            self.assertEqual(pdf_path.read_bytes(), pdf_payload)
+            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
 
-        self.assertIn("not a gzipped tar archive", str(error.exception))
+        self.assertIn("arXiv returned a PDF instead of source files", str(error.exception))
+        self.assertIn("Saved PDF to 1234.56789/1234.56789v2.pdf", str(error.exception))
+
+    def test_download_arxiv_source_files_saves_pdf_with_unversioned_fallback_name(self):
+        pdf_payload = b"%PDF-1.5\n"
+
+        class FakeResponse:
+            headers = {"content-length": str(len(pdf_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield pdf_payload
+
+        paper = SimpleNamespace(entry_id="", pdf_url="https://arxiv.org/pdf/1234.56789")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                        with self.assertRaises(downloader_module.SourceDownloadError):
+                            with redirect_stderr(io.StringIO()):
+                                downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertEqual((output_dir / "1234.56789.pdf").read_bytes(), pdf_payload)
 
     def test_download_arxiv_source_files_reports_metadata_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
