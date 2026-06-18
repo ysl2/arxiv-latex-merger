@@ -171,7 +171,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
 
         for match in input_matches:
             line_parts.append(line[previous_end:match.start()])
-            input_relative_path = match.group(1).replace('\\', '/')
+            input_relative_path = match.group(1).strip().replace('\\', '/')
             input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
             input_file_dir = os.path.dirname(input_file_path)
             input_file_lines, _ = read_tex_file(input_file_path)

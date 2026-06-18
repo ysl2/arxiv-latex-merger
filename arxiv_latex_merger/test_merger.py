@@ -107,6 +107,27 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Implementation details.", merged)
         self.assertNotIn("\\input{sections/appendix.implementation}", merged)
 
+    def test_input_path_ignores_surrounding_whitespace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "table").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{ table/reference-compatible}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "table" / "reference-compatible.tex").write_text(
+                "Reference compatibility table.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Reference compatibility table.", merged)
+        self.assertNotIn("\\input{ table/reference-compatible}", merged)
+
     def test_escaped_percent_does_not_comment_out_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
