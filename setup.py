@@ -5,8 +5,7 @@ setup(
     version='0.2.0',
     packages=find_packages(),
     install_requires=[
-        'arxiv==1.3.0',
-        'feedparser',
+        'tqdm==4.65.0',
     ],
     entry_points={
         'console_scripts': [

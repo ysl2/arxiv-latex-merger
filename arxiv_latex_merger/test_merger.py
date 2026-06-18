@@ -799,44 +799,6 @@ class CliTests(unittest.TestCase):
         merge_mock.assert_called_once()
         self.assertIn("Skipping 1111.11111", stdout.getvalue())
 
-    def test_metadata_error_skips_code_and_continues(self):
-        args = SimpleNamespace(
-            arxiv_codes=["1111.11111", "2222.22222"],
-            n_random=1,
-            demacro=False,
-            remove_src=False,
-            no_bib=False,
-            remove_comments=False,
-            skip_download_if_exists=False,
-        )
-
-        def fake_download(code):
-            if code == "1111.11111":
-                raise downloader_module.SourceDownloadError(
-                    "Could not fetch arXiv metadata for 1111.11111: object has no attribute 'status'"
-                )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", side_effect=fake_download) as download_mock:
-                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="2222.22222/main.tex") as find_mock:
-                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
-                            stdout = io.StringIO()
-                            with redirect_stdout(stdout):
-                                cli_module.main(args)
-            finally:
-                os.chdir(previous_cwd)
-
-            self.assertFalse((root / "1111.11111.tex").exists())
-            self.assertEqual((root / "2222.22222.tex").read_text(), "merged")
-
-        self.assertEqual(download_mock.call_count, 2)
-        find_mock.assert_called_once_with("2222.22222")
-        self.assertIn("object has no attribute 'status'", stdout.getvalue())
-
 
 class DownloaderTests(unittest.TestCase):
     def test_download_arxiv_source_files_reports_download_progress(self):
@@ -858,18 +820,15 @@ class DownloaderTests(unittest.TestCase):
                 yield tar_payload[:10]
                 yield tar_payload[10:]
 
-        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
-
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
                 stdout = io.StringIO()
                 stderr = io.StringIO()
-                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
-                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
-                        with redirect_stdout(stdout), redirect_stderr(stderr):
-                            downloader_module.download_arxiv_source_files("1234.56789")
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        downloader_module.download_arxiv_source_files("1234.56789")
             finally:
                 os.chdir(previous_cwd)
 
@@ -877,9 +836,7 @@ class DownloaderTests(unittest.TestCase):
             self.assertTrue((output_dir / "main.tex").exists())
             self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
 
-        output = stdout.getvalue()
-        self.assertIn("Fetching arXiv metadata for 1234.56789...", output)
-        self.assertIn("Downloading source files for 1234.56789...", output)
+        self.assertIn("Downloading source files for 1234.56789...", stdout.getvalue())
         self.assertIn("Downloading source for 1234.56789", stderr.getvalue())
         get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
 
@@ -895,303 +852,24 @@ class DownloaderTests(unittest.TestCase):
             def iter_content(self, chunk_size):
                 yield pdf_payload
 
-        paper = SimpleNamespace(
-            entry_id="https://arxiv.org/abs/1234.56789v2",
-            pdf_url="https://arxiv.org/pdf/1234.56789v2",
-        )
-
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
-                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
-                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
-                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                    with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                        with redirect_stderr(io.StringIO()):
+                            downloader_module.download_arxiv_source_files("1234.56789")
             finally:
                 os.chdir(previous_cwd)
 
             output_dir = Path(temp_dir) / "1234.56789"
-            pdf_path = output_dir / "1234.56789v2.pdf"
+            pdf_path = output_dir / "1234.56789.pdf"
             self.assertEqual(pdf_path.read_bytes(), pdf_payload)
             self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
 
         self.assertIn("arXiv returned a PDF instead of source files", str(error.exception))
-        self.assertIn("Saved PDF to 1234.56789/1234.56789v2.pdf", str(error.exception))
-
-    def test_download_arxiv_source_files_saves_pdf_with_unversioned_fallback_name(self):
-        pdf_payload = b"%PDF-1.5\n"
-
-        class FakeResponse:
-            headers = {"content-length": str(len(pdf_payload))}
-
-            def raise_for_status(self):
-                pass
-
-            def iter_content(self, chunk_size):
-                yield pdf_payload
-
-        paper = SimpleNamespace(entry_id="", pdf_url="https://arxiv.org/pdf/1234.56789")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
-                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
-                        with self.assertRaises(downloader_module.SourceDownloadError):
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertEqual((output_dir / "1234.56789.pdf").read_bytes(), pdf_payload)
-
-    def test_download_arxiv_source_files_reports_metadata_error(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=AttributeError("object has no attribute 'status'"),
-                ):
-                    with self.assertRaises(downloader_module.SourceDownloadError) as error:
-                        downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertFalse(output_dir.exists())
-
-        self.assertIn("Could not fetch arXiv metadata for 1234.56789", str(error.exception))
-        self.assertIn("object has no attribute 'status'", str(error.exception))
-
-    def test_download_arxiv_source_files_retries_transient_metadata_error(self):
-        payload = io.BytesIO()
-        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
-            content = b"\\documentclass{article}\n"
-            info = tarfile.TarInfo("main.tex")
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-        tar_payload = payload.getvalue()
-
-        class FakeResponse:
-            headers = {"content-length": str(len(tar_payload))}
-
-            def raise_for_status(self):
-                pass
-
-            def iter_content(self, chunk_size):
-                yield tar_payload
-
-        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
-        transient_error = downloader_module.arxiv.HTTPError("url", 0, 503)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=[transient_error, iter([paper])],
-                ) as results_mock:
-                    with patch("arxiv_latex_merger.downloader.time.sleep") as sleep_mock:
-                        with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue((output_dir / "main.tex").exists())
-
-        self.assertEqual(results_mock.call_count, 2)
-        sleep_mock.assert_called_once_with(downloader_module.ARXIV_METADATA_RETRY_DELAY_SECONDS)
-
-    def test_download_arxiv_source_files_uses_direct_source_after_transient_metadata_errors(self):
-        payload = io.BytesIO()
-        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
-            content = b"\\documentclass{article}\n"
-            info = tarfile.TarInfo("main.tex")
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-        tar_payload = payload.getvalue()
-
-        class FakeResponse:
-            headers = {"content-length": str(len(tar_payload))}
-
-            def raise_for_status(self):
-                pass
-
-            def iter_content(self, chunk_size):
-                yield tar_payload
-
-        transient_errors = [
-            downloader_module.arxiv.HTTPError("url", retry, 503)
-            for retry in range(downloader_module.ARXIV_METADATA_MAX_ATTEMPTS)
-        ]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=transient_errors,
-                ) as results_mock:
-                    with patch("arxiv_latex_merger.downloader.time.sleep") as sleep_mock:
-                        with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue((output_dir / "main.tex").exists())
-
-        self.assertEqual(results_mock.call_count, downloader_module.ARXIV_METADATA_MAX_ATTEMPTS)
-        self.assertEqual(
-            sleep_mock.call_count,
-            downloader_module.ARXIV_METADATA_MAX_ATTEMPTS - 1,
-        )
-        get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
-
-    def test_download_arxiv_source_files_uses_direct_source_after_metadata_timeouts(self):
-        payload = io.BytesIO()
-        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
-            content = b"\\documentclass{article}\n"
-            info = tarfile.TarInfo("main.tex")
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-        tar_payload = payload.getvalue()
-
-        class FakeResponse:
-            headers = {"content-length": str(len(tar_payload))}
-
-            def raise_for_status(self):
-                pass
-
-            def iter_content(self, chunk_size):
-                yield tar_payload
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=[
-                        downloader_module.requests.Timeout("timed out")
-                        for _ in range(downloader_module.ARXIV_METADATA_MAX_ATTEMPTS)
-                    ],
-                ):
-                    with patch("arxiv_latex_merger.downloader.time.sleep"):
-                        with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue((output_dir / "main.tex").exists())
-
-        get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
-
-    def test_download_arxiv_source_files_uses_direct_source_after_metadata_connection_errors(self):
-        payload = io.BytesIO()
-        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
-            content = b"\\documentclass{article}\n"
-            info = tarfile.TarInfo("main.tex")
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-        tar_payload = payload.getvalue()
-
-        class FakeResponse:
-            headers = {"content-length": str(len(tar_payload))}
-
-            def raise_for_status(self):
-                pass
-
-            def iter_content(self, chunk_size):
-                yield tar_payload
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=[
-                        downloader_module.requests.ConnectionError("connection failed")
-                        for _ in range(downloader_module.ARXIV_METADATA_MAX_ATTEMPTS)
-                    ],
-                ):
-                    with patch("arxiv_latex_merger.downloader.time.sleep"):
-                        with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue((output_dir / "main.tex").exists())
-
-        get_mock.assert_called_once_with("https://arxiv.org/src/1234.56789", stream=True)
-
-    def test_arxiv_search_url_preserves_search_max_results(self):
-        search = downloader_module.arxiv.Search(
-            id_list=["1111.11111", "2222.22222"],
-            max_results=2,
-        )
-
-        url = downloader_module._arxiv_search_url(search)
-
-        self.assertIn("id_list=1111.11111%2C2222.22222", url)
-        self.assertIn("max_results=2", url)
-
-    def test_download_arxiv_source_files_removes_existing_empty_output_dir_after_metadata_error(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            output_dir = root / "1234.56789"
-            output_dir.mkdir()
-
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=AttributeError("object has no attribute 'status'"),
-                ):
-                    with self.assertRaises(downloader_module.SourceDownloadError):
-                        downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            self.assertFalse(output_dir.exists())
-
-    def test_download_arxiv_source_files_keeps_existing_non_empty_output_dir_after_metadata_error(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            output_dir = root / "1234.56789"
-            output_dir.mkdir()
-            (output_dir / "notes.txt").write_text("keep me", encoding="utf-8")
-
-            previous_cwd = os.getcwd()
-            os.chdir(temp_dir)
-            try:
-                with patch(
-                    "arxiv_latex_merger.downloader._arxiv_results",
-                    side_effect=AttributeError("object has no attribute 'status'"),
-                ):
-                    with self.assertRaises(downloader_module.SourceDownloadError):
-                        downloader_module.download_arxiv_source_files("1234.56789")
-            finally:
-                os.chdir(previous_cwd)
-
-            self.assertTrue((output_dir / "notes.txt").exists())
+        self.assertIn("Saved PDF to 1234.56789/1234.56789.pdf", str(error.exception))
 
     def test_download_arxiv_source_files_removes_empty_output_dir_after_download_error(self):
         class FakeResponse:
@@ -1200,16 +878,13 @@ class DownloaderTests(unittest.TestCase):
             def raise_for_status(self):
                 raise RuntimeError("download failed")
 
-        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
-
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
-                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
-                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
-                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
-                            downloader_module.download_arxiv_source_files("1234.56789")
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                    with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                        downloader_module.download_arxiv_source_files("1234.56789")
             finally:
                 os.chdir(previous_cwd)
 
@@ -1234,17 +909,14 @@ class DownloaderTests(unittest.TestCase):
             def iter_content(self, chunk_size):
                 yield tar_payload
 
-        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
-
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
-                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
-                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
-                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
-                            with redirect_stderr(io.StringIO()):
-                                downloader_module.download_arxiv_source_files("1234.56789")
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                    with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                        with redirect_stderr(io.StringIO()):
+                            downloader_module.download_arxiv_source_files("1234.56789")
             finally:
                 os.chdir(previous_cwd)
 
@@ -1252,3 +924,79 @@ class DownloaderTests(unittest.TestCase):
             self.assertFalse(output_dir.exists())
 
         self.assertIn("Downloaded source for 1234.56789 contained no files", str(error.exception))
+
+    def test_download_random_arxiv_papers_downloads_generated_ids_from_source_only(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"\\documentclass{article}\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_payload = payload.getvalue()
+        requested_urls = []
+
+        class SourceResponse:
+            headers = {"content-length": str(len(tar_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield tar_payload
+
+        def fake_get(url, **kwargs):
+            requested_urls.append((url, kwargs))
+            if url == "https://arxiv.org/src/2304.9319v1":
+                return SourceResponse()
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader.random.randint",
+                    side_effect=[23, 4, 9319, 1],
+                ):
+                    with patch("arxiv_latex_merger.downloader.requests.get", side_effect=fake_get):
+                        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                            arxiv_codes = downloader_module.download_random_arxiv_papers(1)
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "2304.9319v1"
+            self.assertTrue((output_dir / "main.tex").exists())
+
+        self.assertEqual(arxiv_codes, ["2304.9319v1"])
+        self.assertEqual(
+            requested_urls,
+            [
+                ("https://arxiv.org/src/2304.9319v1", {"stream": True}),
+            ],
+        )
+
+    def test_download_random_arxiv_papers_removes_empty_dir_after_download_failure(self):
+        class FakeResponse:
+            headers = {}
+
+            def raise_for_status(self):
+                raise RuntimeError("download failed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader.random.randint",
+                    side_effect=[23, 4, 9319, 1],
+                ):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()) as get_mock:
+                        with self.assertRaises(downloader_module.SourceDownloadError):
+                            with redirect_stderr(io.StringIO()):
+                                downloader_module.download_random_arxiv_papers(1)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((Path(temp_dir) / "2304.9319v1").exists())
+
+        get_mock.assert_called_once_with("https://arxiv.org/src/2304.9319v1", stream=True)
