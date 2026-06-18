@@ -38,6 +38,53 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("%   \\input{missing}", merged)
         self.assertIn("Text before comment. % \\input{also_missing}", merged)
 
+    def test_inputs_inside_comment_environment_are_not_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "Before comment.\n"
+                "\\begin{comment}\n"
+                "\\input{missing}\n"
+                "\\end{comment}\n"
+                "\\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text("Section body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\begin{comment}", merged)
+        self.assertIn("\\input{missing}", merged)
+        self.assertIn("\\end{comment}", merged)
+        self.assertIn("Section body.", merged)
+        self.assertNotIn("\\input{section}", merged)
+
+    def test_inputs_inside_literal_environment_are_not_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\begin{verbatim}\n"
+                "\\input{missing}\n"
+                "\\end{verbatim}\n"
+                "\\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text("Section body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\begin{verbatim}", merged)
+        self.assertIn("\\input{missing}", merged)
+        self.assertIn("\\end{verbatim}", merged)
+        self.assertIn("Section body.", merged)
+        self.assertNotIn("\\input{section}", merged)
+
     def test_active_inputs_in_child_files_are_processed_recursively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -174,6 +174,35 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_roo
     )
 
 
+def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir):
+    input_matches = list(_active_pattern_matches(input_pattern, line))
+
+    if not input_matches:
+        return line
+
+    line_parts = []
+    previous_end = 0
+
+    for match in input_matches:
+        line_parts.append(line[previous_end:match.start()])
+        input_relative_path = match.group(1).strip().replace('\\', '/')
+        input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
+        if input_file_path is None:
+            line_parts.append(match.group(0))
+            previous_end = match.end()
+            continue
+
+        input_file_dir = os.path.dirname(input_file_path)
+        input_file_lines, _ = read_tex_file(input_file_path)
+
+        input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir, source_root_dir)
+        line_parts.append(''.join(input_file_content))
+        previous_end = match.end()
+
+    line_parts.append(line[previous_end:])
+    return ''.join(line_parts)
+
+
 def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=None):
     if root_dir is None:
         root_dir = file_dir
@@ -182,35 +211,49 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
 
     input_pattern = re.compile(r'\\input\{(.+?)\}')
     output_lines = []
+    in_comment_environment = False
+    literal_environment = None
 
     for line in file_lines:
-        input_matches = list(_active_pattern_matches(input_pattern, line))
-
-        if not input_matches:
+        if in_comment_environment:
             output_lines.append(line)
+            if _first_active_environment_match(line, 'end', {'comment'}):
+                in_comment_environment = False
             continue
 
-        line_parts = []
-        previous_end = 0
+        if literal_environment:
+            output_lines.append(line)
+            if _first_active_environment_match(line, 'end', {literal_environment}):
+                literal_environment = None
+            continue
 
-        for match in input_matches:
-            line_parts.append(line[previous_end:match.start()])
-            input_relative_path = match.group(1).strip().replace('\\', '/')
-            input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
-            if input_file_path is None:
-                line_parts.append(match.group(0))
-                previous_end = match.end()
-                continue
+        comment_begin = _first_active_environment_match(line, 'begin', {'comment'})
+        literal_begin = _first_active_environment_match(line, 'begin', _LITERAL_ENVIRONMENTS)
 
-            input_file_dir = os.path.dirname(input_file_path)
-            input_file_lines, _ = read_tex_file(input_file_path)
+        if comment_begin and (not literal_begin or comment_begin.start() < literal_begin.start()):
+            prefix = line[:comment_begin.start()]
+            suffix = line[comment_begin.start():]
+            output_lines.append(
+                _process_input_commands_in_line(prefix, input_pattern, file_dir, root_dir, source_root_dir) + suffix
+            )
+            if not _first_active_environment_match(line, 'end', {'comment'}, start_after=comment_begin.start()):
+                in_comment_environment = True
+            continue
 
-            input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir, source_root_dir)
-            line_parts.append(''.join(input_file_content))
-            previous_end = match.end()
+        if literal_begin:
+            prefix = line[:literal_begin.start()]
+            suffix = line[literal_begin.start():]
+            output_lines.append(
+                _process_input_commands_in_line(prefix, input_pattern, file_dir, root_dir, source_root_dir) + suffix
+            )
+            literal_environment = literal_begin.group(1)
+            if _first_active_environment_match(line, 'end', {literal_environment}, start_after=literal_begin.start()):
+                literal_environment = None
+            continue
 
-        line_parts.append(line[previous_end:])
-        output_lines.append(''.join(line_parts))
+        output_lines.append(
+            _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir)
+        )
 
     return output_lines
 
