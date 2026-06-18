@@ -822,6 +822,47 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("Could not fetch arXiv metadata for 1234.56789", str(error.exception))
         self.assertIn("object has no attribute 'status'", str(error.exception))
 
+    def test_download_arxiv_source_files_removes_existing_empty_output_dir_after_metadata_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "1234.56789"
+            output_dir.mkdir()
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader._arxiv_results",
+                    side_effect=AttributeError("object has no attribute 'status'"),
+                ):
+                    with self.assertRaises(downloader_module.SourceDownloadError):
+                        downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse(output_dir.exists())
+
+    def test_download_arxiv_source_files_keeps_existing_non_empty_output_dir_after_metadata_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "1234.56789"
+            output_dir.mkdir()
+            (output_dir / "notes.txt").write_text("keep me", encoding="utf-8")
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader._arxiv_results",
+                    side_effect=AttributeError("object has no attribute 'status'"),
+                ):
+                    with self.assertRaises(downloader_module.SourceDownloadError):
+                        downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertTrue((output_dir / "notes.txt").exists())
+
     def test_download_arxiv_source_files_removes_empty_output_dir_after_download_error(self):
         class FakeResponse:
             headers = {}

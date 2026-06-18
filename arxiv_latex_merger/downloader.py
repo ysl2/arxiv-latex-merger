@@ -70,16 +70,16 @@ def download_arxiv_source_files(arxiv_code):
     output_dir = arxiv_code
     removed_empty_output_dir = False
 
-    # Use arxiv API to get the paper object
-    print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
-    paper = _metadata_for_arxiv_code(arxiv_code)
-
-    # Create the output directory only after metadata is available.
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    # Download the source files.
-    tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
     try:
+        # Use arxiv API to get the paper object
+        print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
+        paper = _metadata_for_arxiv_code(arxiv_code)
+
+        # Create the output directory only after metadata is available.
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Download the source files.
+        tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
         print(f"Downloading source files for {arxiv_code}...", flush=True)
         _download_file_with_progress(
             _source_url_for_paper(paper),
