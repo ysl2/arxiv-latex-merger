@@ -96,6 +96,27 @@ def _input_path_candidates(file_path):
         yield f"{file_path}.tex"
 
 
+_PRESERVED_SYSTEM_INPUT_NAMES = {
+    'glyphtounicode',
+}
+
+
+def _should_preserve_missing_input(input_relative_path):
+    normalized_path = os.path.normpath(input_relative_path)
+
+    if os.path.isabs(normalized_path):
+        return False
+
+    if normalized_path.startswith('..') or os.sep in normalized_path:
+        return False
+
+    input_name = normalized_path
+    if input_name.endswith('.tex'):
+        input_name = input_name[:-len('.tex')]
+
+    return input_name in _PRESERVED_SYSTEM_INPUT_NAMES
+
+
 def _find_source_root_dir(start_dir):
     current_dir = os.path.abspath(start_dir or '.')
 
@@ -142,6 +163,9 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_roo
         if os.path.isfile(candidate_path):
             return candidate_path
 
+    if _should_preserve_missing_input(input_relative_path):
+        return None
+
     expected_paths = ', '.join(candidate_paths)
     root_display = root_dir or '.'
     raise FileNotFoundError(
@@ -173,6 +197,11 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             line_parts.append(line[previous_end:match.start()])
             input_relative_path = match.group(1).strip().replace('\\', '/')
             input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
+            if input_file_path is None:
+                line_parts.append(match.group(0))
+                previous_end = match.end()
+                continue
+
             input_file_dir = os.path.dirname(input_file_path)
             input_file_lines, _ = read_tex_file(input_file_path)
 

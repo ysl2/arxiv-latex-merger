@@ -227,6 +227,44 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Expected", str(error.exception))
         self.assertIn("subsection.tex", str(error.exception))
 
+    def test_missing_glyphtounicode_input_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\input{glyphtounicode}\n"
+                "\\begin{document}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\input{glyphtounicode}", merged)
+        self.assertIn("Body.", merged)
+
+    def test_local_glyphtounicode_input_is_still_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\input{glyphtounicode}\n"
+                "\\begin{document}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "glyphtounicode.tex").write_text(
+                "\\pdfglyphtounicode{A}{0041}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\pdfglyphtounicode{A}{0041}", merged)
+        self.assertNotIn("\\input{glyphtounicode}", merged)
+
 
 class MergerBibliographyTests(unittest.TestCase):
     def test_existing_bbl_is_inlined_and_bibliography_commands_are_removed(self):
