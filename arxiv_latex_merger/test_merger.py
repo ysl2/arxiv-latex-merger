@@ -11,10 +11,36 @@ from unittest.mock import patch
 
 from . import cli as cli_module
 from . import downloader as downloader_module
-from .merger import merge_tex_files
+from .merger import find_main_tex_file, merge_tex_files
 
 
 class MergerInputCommentTests(unittest.TestCase):
+    def test_find_main_tex_uses_arxiv_readme_toplevel_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "00README.json").write_text(
+                '{"sources":[{"usage":"toplevel","filename":"latex/main.tex"}]}',
+                encoding="utf-8",
+            )
+            (root / "latex").mkdir()
+            (root / "latex" / "main.tex").write_text(
+                "\\documentclass{article}\n",
+                encoding="utf-8",
+            )
+
+            main_tex_path = find_main_tex_file(str(root))
+
+        self.assertEqual(main_tex_path, str(root / "latex" / "main.tex"))
+
+    def test_find_main_tex_does_not_return_non_tex_single_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "figs").mkdir()
+            (root / "figs" / "plot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            with self.assertRaises(FileNotFoundError):
+                find_main_tex_file(str(root))
+
     def test_commented_inputs_in_child_files_are_not_processed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -410,6 +436,45 @@ class MergerBibliographyTests(unittest.TestCase):
         self.assertIn("\\bibitem{key} Generated root-relative reference.", merged)
         self.assertNotIn("\\bibliography{latex/refs}", merged)
         self.assertNotIn("\\bibliographystyle{plain}", merged)
+
+    def test_missing_bbl_uses_arxiv_readme_compiler(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "00README.json").write_text(
+                '{"sources":[{"usage":"toplevel","filename":"main.tex"}],'
+                '"process":{"compiler":"xelatex"}}',
+                encoding="utf-8",
+            )
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\bibliographystyle{plain}\n"
+                "\\bibliography{refs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "refs.bib").write_text(
+                "@article{key, title={Title}, author={Author}, year={2024}}\n",
+                encoding="utf-8",
+            )
+
+            def fake_run(args, **kwargs):
+                (root / "main.bbl").write_text(
+                    "\\begin{thebibliography}{1}\n"
+                    "\\bibitem{key} Generated xelatex reference.\n"
+                    "\\end{thebibliography}\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=args, returncode=0)
+
+            with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run) as run_mock:
+                merged, _ = merge_tex_files(str(root / "main.tex"))
+
+        run_args = run_mock.call_args.args[0]
+        self.assertIn("-pdfxe", run_args)
+        self.assertNotIn("-pdf", run_args)
+        self.assertIn("\\bibitem{key} Generated xelatex reference.", merged)
+        self.assertNotIn("\\bibliography{refs}", merged)
 
     def test_no_bib_option_preserves_bibliography_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:

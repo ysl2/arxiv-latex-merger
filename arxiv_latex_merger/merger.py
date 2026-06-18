@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -16,23 +17,61 @@ def read_tex_file(file_path):
 
 def find_main_tex_file(directory):
     documentclass_pattern = re.compile(r'\\documentclass')
+    source_root_dir = Path(directory)
+
+    readme_main_tex_path = _main_tex_file_from_arxiv_readme(source_root_dir)
+    if readme_main_tex_path:
+        return str(readme_main_tex_path)
+
+    tex_file_paths = []
 
     for root, _, files in os.walk(directory):
-        # special case for some old submissions, they are already merged
-        if len(files)==1:
-            print(f"Detected single file for {directory}, please verify that this is correct...")
-            file_path = os.path.join(root, files[0])
-            return file_path
-        
         for file in files:
             file_path = os.path.join(root, file)
             if file.endswith('.tex'):
+                tex_file_paths.append(file_path)
                 tex_file, _ = read_tex_file(file_path)
                 for line in tex_file:
                     if documentclass_pattern.search(line):
                         return file_path
 
+    # special case for some old submissions, they are already merged
+    if len(tex_file_paths) == 1:
+        print(f"Detected single TeX file for {directory}, please verify that this is correct...")
+        return tex_file_paths[0]
+
     raise FileNotFoundError(f"No main .tex file found in the specified directory {directory}")
+
+
+def _main_tex_file_from_arxiv_readme(source_root_dir):
+    readme = _read_arxiv_readme(source_root_dir)
+    if not readme:
+        return None
+
+    for source in readme.get('sources', []):
+        if source.get('usage') != 'toplevel':
+            continue
+
+        filename = source.get('filename')
+        if not filename:
+            continue
+
+        source_path = source_root_dir / filename
+        if source_path.is_file() and source_path.suffix == '.tex':
+            return source_path
+
+    return None
+
+
+def _read_arxiv_readme(source_root_dir):
+    readme_path = Path(source_root_dir) / '00README.json'
+    if not readme_path.is_file():
+        return None
+
+    try:
+        return json.loads(readme_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _is_escaped(line, index):
@@ -444,15 +483,28 @@ def _latexmk_run_candidates(main_tex_path, source_root_dir, preferred_work_dirs=
         yield work_dir_abs_path, main_tex_argument
 
 
+def _latexmk_pdf_mode_arg(source_root_dir):
+    readme = _read_arxiv_readme(source_root_dir)
+    compiler = (readme or {}).get('process', {}).get('compiler', '').lower()
+
+    if compiler == 'xelatex':
+        return '-pdfxe'
+    if compiler == 'lualatex':
+        return '-pdflua'
+
+    return '-pdf'
+
+
 def _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=None):
     any_success = False
+    latexmk_pdf_mode_arg = _latexmk_pdf_mode_arg(source_root_dir)
 
     for work_dir, main_tex_argument in _latexmk_run_candidates(main_tex_path, source_root_dir, preferred_work_dirs):
         try:
             result = subprocess.run(
                 [
                     'latexmk',
-                    '-pdf',
+                    latexmk_pdf_mode_arg,
                     '-interaction=nonstopmode',
                     '-halt-on-error',
                     main_tex_argument,
