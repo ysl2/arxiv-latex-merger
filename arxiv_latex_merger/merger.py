@@ -356,49 +356,123 @@ def _active_bibliography_commands(file_lines):
     return commands
 
 
-def _bibliography_sources_exist(bibliography_commands, file_dir):
+def _bibliography_path_candidates_with_work_dirs(bib_name, root_dir, source_root_dir):
+    bib_name = bib_name.strip().replace('\\', '/')
+    if not bib_name:
+        return []
+
+    if os.path.isabs(bib_name):
+        candidate_paths = [(os.path.normpath(bib_name), root_dir)]
+    else:
+        candidate_paths = [
+            (os.path.normpath(os.path.join(root_dir, bib_name)), root_dir),
+            (os.path.normpath(os.path.join(source_root_dir, bib_name)), source_root_dir),
+        ]
+
+    seen_paths = set()
+    output_paths = []
+    for path, work_dir in candidate_paths:
+        if not path.endswith('.bib'):
+            path += '.bib'
+
+        path_abs = os.path.abspath(path)
+        if path_abs in seen_paths:
+            continue
+
+        seen_paths.add(path_abs)
+        output_paths.append((path, work_dir))
+
+    return output_paths
+
+
+def _bibliography_source_work_dirs(bibliography_commands, root_dir, source_root_dir):
+    source_work_dirs = []
+
     for command in bibliography_commands:
         for bib_name in command.split(','):
-            bib_name = bib_name.strip().replace('\\', '/')
-            if not bib_name:
-                continue
+            for bib_path, work_dir in _bibliography_path_candidates_with_work_dirs(
+                bib_name,
+                root_dir,
+                source_root_dir,
+            ):
+                if os.path.isfile(bib_path):
+                    source_work_dirs.append(work_dir)
+                    break
 
-            bib_path = os.path.normpath(os.path.join(file_dir, bib_name))
-            if not bib_path.endswith('.bib'):
-                bib_path += '.bib'
+    return list(_deduplicate_paths(source_work_dirs))
 
-            if os.path.isfile(bib_path):
-                return True
+
+def _bbl_file_path_candidates(main_tex_path, source_root_dir):
+    main_tex_bbl_path = os.path.splitext(main_tex_path)[0] + '.bbl'
+    bbl_filename = os.path.splitext(os.path.basename(main_tex_path))[0] + '.bbl'
+    source_root_bbl_path = os.path.join(source_root_dir, bbl_filename)
+
+    return list(_deduplicate_paths([main_tex_bbl_path, source_root_bbl_path]))
+
+
+def _first_existing_path(paths):
+    for path in paths:
+        if os.path.isfile(path):
+            return path
 
     return False
 
 
-def _generate_bbl_file(main_tex_path):
-    main_tex_dir = os.path.dirname(main_tex_path) or '.'
-    main_tex_filename = os.path.basename(main_tex_path)
+def _latexmk_run_candidates(main_tex_path, source_root_dir, preferred_work_dirs=None):
+    main_tex_abs_path = os.path.abspath(main_tex_path)
+    main_tex_dir = os.path.dirname(main_tex_abs_path) or os.path.abspath('.')
+    work_dirs = list(preferred_work_dirs or [])
+    work_dirs.extend([main_tex_dir, source_root_dir])
 
-    try:
-        result = subprocess.run(
-            [
-                'latexmk',
-                '-pdf',
-                '-interaction=nonstopmode',
-                '-halt-on-error',
-                main_tex_filename,
-            ],
-            cwd=main_tex_dir,
-            check=False,
-            capture_output=True,
-        )
-    except FileNotFoundError:
-        print("Warning: latexmk was not found; bibliography could not be inlined.")
-        return False
+    seen = set()
+    for work_dir in work_dirs:
+        work_dir_abs_path = os.path.abspath(work_dir or '.')
+        if work_dir_abs_path in seen:
+            continue
 
-    if result.returncode != 0:
+        seen.add(work_dir_abs_path)
+        try:
+            common_path = os.path.commonpath([main_tex_abs_path, work_dir_abs_path])
+        except ValueError:
+            common_path = None
+
+        if common_path == work_dir_abs_path:
+            main_tex_argument = os.path.relpath(main_tex_abs_path, work_dir_abs_path)
+        else:
+            main_tex_argument = main_tex_abs_path
+
+        yield work_dir_abs_path, main_tex_argument
+
+
+def _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=None):
+    any_success = False
+
+    for work_dir, main_tex_argument in _latexmk_run_candidates(main_tex_path, source_root_dir, preferred_work_dirs):
+        try:
+            result = subprocess.run(
+                [
+                    'latexmk',
+                    '-pdf',
+                    '-interaction=nonstopmode',
+                    '-halt-on-error',
+                    main_tex_argument,
+                ],
+                cwd=work_dir,
+                check=False,
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            print("Warning: latexmk was not found; bibliography could not be inlined.")
+            return False
+
+        if result.returncode == 0:
+            any_success = True
+            break
+
+    if not any_success:
         print(f"Warning: latexmk failed for {main_tex_path}; bibliography could not be inlined.")
-        return False
 
-    return True
+    return any_success
 
 
 def process_bibliography_commands(file_lines, main_tex_path):
@@ -408,15 +482,23 @@ def process_bibliography_commands(file_lines, main_tex_path):
         return file_lines
 
     main_tex_dir = os.path.dirname(main_tex_path)
-    bbl_file_path = os.path.splitext(main_tex_path)[0] + '.bbl'
+    source_root_dir = _find_source_root_dir(main_tex_dir)
+    bbl_file_paths = _bbl_file_path_candidates(main_tex_path, source_root_dir)
+    bbl_file_path = _first_existing_path(bbl_file_paths)
 
-    if not os.path.isfile(bbl_file_path):
-        if _bibliography_sources_exist(bibliography_commands, main_tex_dir):
-            _generate_bbl_file(main_tex_path)
+    if not bbl_file_path:
+        bibliography_work_dirs = _bibliography_source_work_dirs(
+            bibliography_commands,
+            main_tex_dir,
+            source_root_dir,
+        )
+        if bibliography_work_dirs:
+            _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=bibliography_work_dirs)
+            bbl_file_path = _first_existing_path(bbl_file_paths)
         else:
             print(f"Warning: bibliography command found in {main_tex_path}, but no .bib file was found.")
 
-    if not os.path.isfile(bbl_file_path):
+    if not bbl_file_path:
         print(f"Warning: bibliography command found in {main_tex_path}, but no .bbl file was available to inline.")
         return file_lines
 

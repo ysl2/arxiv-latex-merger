@@ -344,6 +344,73 @@ class MergerBibliographyTests(unittest.TestCase):
         self.assertNotIn("\\bibliographystyle", merged)
         self.assertNotIn("\\bibliography", merged)
 
+    def test_existing_bbl_can_be_inlined_from_source_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "00README.json").write_text(
+                '{"sources":[{"usage":"toplevel","filename":"latex/main.tex"}]}',
+                encoding="utf-8",
+            )
+            (root / "latex").mkdir()
+            (root / "latex" / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\bibliography{latex/custom}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "main.bbl").write_text(
+                "\\begin{thebibliography}{1}\n"
+                "\\bibitem{key} Source-root reference.\n"
+                "\\end{thebibliography}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "latex" / "main.tex"))
+
+        self.assertIn("\\bibitem{key} Source-root reference.", merged)
+        self.assertNotIn("\\bibliography{latex/custom}", merged)
+
+    def test_missing_bbl_is_generated_from_source_root_relative_bib(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "00README.json").write_text(
+                '{"sources":[{"usage":"toplevel","filename":"latex/main.tex"}]}',
+                encoding="utf-8",
+            )
+            (root / "latex").mkdir()
+            (root / "latex" / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\bibliographystyle{plain}\n"
+                "\\bibliography{latex/refs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "latex" / "refs.bib").write_text(
+                "@article{key, title={Title}, author={Author}, year={2024}}\n",
+                encoding="utf-8",
+            )
+
+            def fake_run(args, **kwargs):
+                self.assertEqual(kwargs["cwd"], str(root))
+                self.assertEqual(args[-1], os.path.join("latex", "main.tex"))
+                (root / "main.bbl").write_text(
+                    "\\begin{thebibliography}{1}\n"
+                    "\\bibitem{key} Generated root-relative reference.\n"
+                    "\\end{thebibliography}\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(args=args, returncode=0)
+
+            with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run) as run_mock:
+                merged, _ = merge_tex_files(str(root / "latex" / "main.tex"))
+
+        run_mock.assert_called_once()
+        self.assertIn("\\bibitem{key} Generated root-relative reference.", merged)
+        self.assertNotIn("\\bibliography{latex/refs}", merged)
+        self.assertNotIn("\\bibliographystyle{plain}", merged)
+
     def test_no_bib_option_preserves_bibliography_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
