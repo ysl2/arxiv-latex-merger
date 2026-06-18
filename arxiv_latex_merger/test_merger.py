@@ -798,8 +798,7 @@ class DownloaderTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
             output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue(output_dir.exists())
-            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
+            self.assertFalse(output_dir.exists())
 
         self.assertIn("not a gzipped tar archive", str(error.exception))
 
@@ -818,8 +817,67 @@ class DownloaderTests(unittest.TestCase):
                 os.chdir(previous_cwd)
 
             output_dir = Path(temp_dir) / "1234.56789"
-            self.assertTrue(output_dir.exists())
-            self.assertFalse((output_dir / "1234.56789.tar.gz").exists())
+            self.assertFalse(output_dir.exists())
 
         self.assertIn("Could not fetch arXiv metadata for 1234.56789", str(error.exception))
         self.assertIn("object has no attribute 'status'", str(error.exception))
+
+    def test_download_arxiv_source_files_removes_empty_output_dir_after_download_error(self):
+        class FakeResponse:
+            headers = {}
+
+            def raise_for_status(self):
+                raise RuntimeError("download failed")
+
+        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                            downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertFalse(output_dir.exists())
+
+        self.assertIn("Could not download source files for 1234.56789", str(error.exception))
+        self.assertIn("download failed", str(error.exception))
+
+    def test_download_arxiv_source_files_removes_empty_output_dir_after_empty_archive(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz"):
+            pass
+        tar_payload = payload.getvalue()
+
+        class FakeResponse:
+            headers = {"content-length": str(len(tar_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield tar_payload
+
+        paper = SimpleNamespace(pdf_url="https://arxiv.org/pdf/1234.56789")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader._arxiv_results", return_value=iter([paper])):
+                    with patch("arxiv_latex_merger.downloader.requests.get", return_value=FakeResponse()):
+                        with self.assertRaises(downloader_module.SourceDownloadError) as error:
+                            with redirect_stderr(io.StringIO()):
+                                downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789"
+            self.assertFalse(output_dir.exists())
+
+        self.assertIn("Downloaded source for 1234.56789 contained no files", str(error.exception))

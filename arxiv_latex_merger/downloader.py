@@ -57,45 +57,66 @@ def _download_file_with_progress(url, path, desc):
                     progress_bar.update(len(chunk))
 
 
+def _remove_output_dir_if_empty(output_dir):
+    try:
+        Path(output_dir).rmdir()
+    except OSError:
+        return False
+
+    return True
+
+
 def download_arxiv_source_files(arxiv_code):
     output_dir = arxiv_code
-
-    # Create the output directory if it doesn't exist
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    removed_empty_output_dir = False
 
     # Use arxiv API to get the paper object
     print(f"Fetching arXiv metadata for {arxiv_code}...", flush=True)
     paper = _metadata_for_arxiv_code(arxiv_code)
 
+    # Create the output directory only after metadata is available.
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
     # Download the source files.
     tar_file = os.path.join(output_dir, f"{arxiv_code}.tar.gz")
-    print(f"Downloading source files for {arxiv_code}...", flush=True)
-    _download_file_with_progress(
-        _source_url_for_paper(paper),
-        tar_file,
-        desc=f"Downloading source for {arxiv_code}",
-    )
-
     try:
-        with tarfile.open(tar_file, "r:gz") as tar:
-            members = tar.getmembers()
-            with tqdm(
-                total=len(members),
-                unit="file",
-                desc=f"Extracting source files for {arxiv_code}",
-            ) as progress_bar:
-                for member in members:
-                    tar.extract(member, output_dir)
-                    progress_bar.update(1)
-    except tarfile.TarError as error:
-        os.remove(tar_file)
-        raise SourceDownloadError(
-            f"Downloaded source for {arxiv_code} was not a gzipped tar archive. "
-            "arXiv may only provide a PDF for this paper."
-        ) from error
+        print(f"Downloading source files for {arxiv_code}...", flush=True)
+        _download_file_with_progress(
+            _source_url_for_paper(paper),
+            tar_file,
+            desc=f"Downloading source for {arxiv_code}",
+        )
 
-    # Remove the tar file
-    os.remove(tar_file)
+        try:
+            with tarfile.open(tar_file, "r:gz") as tar:
+                members = tar.getmembers()
+                with tqdm(
+                    total=len(members),
+                    unit="file",
+                    desc=f"Extracting source files for {arxiv_code}",
+                ) as progress_bar:
+                    for member in members:
+                        tar.extract(member, output_dir)
+                        progress_bar.update(1)
+        except tarfile.TarError as error:
+            if os.path.exists(tar_file):
+                os.remove(tar_file)
+            raise SourceDownloadError(
+                f"Downloaded source for {arxiv_code} was not a gzipped tar archive. "
+                "arXiv may only provide a PDF for this paper."
+            ) from error
+
+        # Remove the tar file
+        os.remove(tar_file)
+    except SourceDownloadError:
+        raise
+    except Exception as error:
+        raise SourceDownloadError(f"Could not download source files for {arxiv_code}: {error}") from error
+    finally:
+        removed_empty_output_dir = _remove_output_dir_if_empty(output_dir)
+
+    if removed_empty_output_dir:
+        raise SourceDownloadError(f"Downloaded source for {arxiv_code} contained no files.")
 
     print(f"Successfully downloaded and extracted source files to {output_dir} directory")
 
