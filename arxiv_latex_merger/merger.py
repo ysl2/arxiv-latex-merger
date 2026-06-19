@@ -186,6 +186,7 @@ def _input_path_candidates(file_path):
 
 _PRESERVED_SYSTEM_INPUT_NAMES = {
     'glyphtounicode',
+    'insbox',
 }
 
 

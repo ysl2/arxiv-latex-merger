@@ -388,6 +388,44 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\pdfglyphtounicode{A}{0041}", merged)
         self.assertNotIn("\\input{glyphtounicode}", merged)
 
+    def test_missing_insbox_input_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\input{insbox}\n"
+                "\\begin{document}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\input{insbox}", merged)
+        self.assertIn("Body.", merged)
+
+    def test_local_insbox_input_is_still_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\input{insbox}\n"
+                "\\begin{document}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "insbox.tex").write_text(
+                "\\newbox\\insbox\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\newbox\\insbox", merged)
+        self.assertNotIn("\\input{insbox}", merged)
+
     def test_macro_parameter_input_is_preserved_when_unresolved(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
