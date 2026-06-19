@@ -1413,22 +1413,7 @@ class CliTests(unittest.TestCase):
 
 
 class DownloaderTests(unittest.TestCase):
-    def _arxiv_api_response(self, arxiv_code):
-        class ApiResponse:
-            headers = {}
-            text = (
-                "<?xml version='1.0' encoding='UTF-8'?>"
-                "<feed xmlns='http://www.w3.org/2005/Atom'>"
-                f"<entry><id>http://arxiv.org/abs/{arxiv_code}</id></entry>"
-                "</feed>"
-            )
-
-            def raise_for_status(self):
-                pass
-
-        return ApiResponse()
-
-    def _download_response(self, payload):
+    def _download_response(self, payload, filename=None):
         class DownloadResponse:
             headers = {"content-length": str(len(payload))}
 
@@ -1437,6 +1422,9 @@ class DownloaderTests(unittest.TestCase):
 
             def iter_content(self, chunk_size):
                 yield payload
+
+        if filename:
+            DownloadResponse.headers["content-disposition"] = f'attachment; filename="{filename}"'
 
         return DownloadResponse()
 
@@ -1450,7 +1438,10 @@ class DownloaderTests(unittest.TestCase):
         tar_payload = payload.getvalue()
 
         class SourceResponse:
-            headers = {"content-length": str(len(tar_payload))}
+            headers = {
+                "content-length": str(len(tar_payload)),
+                "content-disposition": 'attachment; filename="arXiv-1234.56789v1.tar.gz"',
+            }
 
             def raise_for_status(self):
                 pass
@@ -1460,9 +1451,7 @@ class DownloaderTests(unittest.TestCase):
                 yield tar_payload[10:]
 
         def fake_get(url, **kwargs):
-            if url == downloader_module._ARXIV_API_URL:
-                return self._arxiv_api_response("1234.56789v1")
-            if url == "https://arxiv.org/src/1234.56789v1":
+            if url == "https://arxiv.org/src/1234.56789":
                 return SourceResponse()
             raise AssertionError(f"Unexpected URL: {url}")
 
@@ -1488,13 +1477,25 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(
             get_mock.call_args_list,
             [
-                call(downloader_module._ARXIV_API_URL, params={"id_list": "1234.56789"}),
-                call("https://arxiv.org/src/1234.56789v1", stream=True),
+                call("https://arxiv.org/src/1234.56789", stream=True),
             ],
         )
 
     def test_download_arxiv_source_files_falls_back_to_pdf_when_no_source_versions_download(self):
         pdf_payload = b"%PDF-1.7\n"
+
+        class SourcePdfResponse:
+            headers = {
+                "content-length": str(len(pdf_payload)),
+                "content-disposition": 'attachment; filename="arXiv-1234.56789v2.pdf"',
+                "content-type": "application/pdf",
+            }
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield pdf_payload
 
         class MissingResponse:
             headers = {}
@@ -1503,10 +1504,10 @@ class DownloaderTests(unittest.TestCase):
                 raise RuntimeError("not found")
 
         def fake_get(url, **kwargs):
-            if url == downloader_module._ARXIV_API_URL:
-                return self._arxiv_api_response("1234.56789v2")
-            if url == "https://arxiv.org/pdf/1234.56789v1":
-                return self._download_response(pdf_payload)
+            if url == "https://arxiv.org/src/1234.56789":
+                return SourcePdfResponse()
+            if url == "https://arxiv.org/pdf/1234.56789v2":
+                return self._download_response(pdf_payload, filename="1234.56789v2.pdf")
             return MissingResponse()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1519,23 +1520,21 @@ class DownloaderTests(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
-            output_dir = Path(temp_dir) / "1234.56789v1"
-            pdf_path = output_dir / "1234.56789v1.pdf"
-            symlink_path = Path(temp_dir) / "1234.56789v1.pdf"
+            output_dir = Path(temp_dir) / "1234.56789v2"
+            pdf_path = output_dir / "1234.56789v2.pdf"
+            symlink_path = Path(temp_dir) / "1234.56789v2.pdf"
             self.assertEqual(pdf_path.read_bytes(), pdf_payload)
             self.assertTrue(symlink_path.is_symlink())
-            self.assertEqual(os.readlink(symlink_path), "1234.56789v1/1234.56789v1.pdf")
+            self.assertEqual(os.readlink(symlink_path), "1234.56789v2/1234.56789v2.pdf")
             self.assertTrue(symlink_path.samefile(pdf_path))
-            self.assertFalse((output_dir / "1234.56789v1.tar.gz").exists())
+            self.assertFalse((output_dir / "1234.56789v2.tar.gz").exists())
 
-        self.assertEqual(downloaded_code, "1234.56789v1")
+        self.assertEqual(downloaded_code, "1234.56789v2")
         self.assertEqual(
             [call.args[0] for call in get_mock.call_args_list],
-            [downloader_module._ARXIV_API_URL]
-            + ["https://arxiv.org/src/1234.56789v2"] * 3
+            ["https://arxiv.org/src/1234.56789"]
             + ["https://arxiv.org/src/1234.56789v1"] * 3
-            + ["https://arxiv.org/pdf/1234.56789v2"] * 3
-            + ["https://arxiv.org/pdf/1234.56789v1"],
+            + ["https://arxiv.org/pdf/1234.56789v2"],
         )
 
     def test_download_arxiv_source_files_falls_back_through_source_versions_before_pdf(self):
@@ -1547,6 +1546,18 @@ class DownloaderTests(unittest.TestCase):
             tar.addfile(info, io.BytesIO(content))
         tar_payload = payload.getvalue()
 
+        class BrokenLatestResponse:
+            headers = {
+                "content-length": str(len(payload.getvalue())),
+                "content-disposition": 'attachment; filename="arXiv-1234.56789v3.tar.gz"',
+            }
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield b"not a gzipped tar archive"
+
         class MissingResponse:
             headers = {}
 
@@ -1554,10 +1565,10 @@ class DownloaderTests(unittest.TestCase):
                 raise RuntimeError("not found")
 
         def fake_get(url, **kwargs):
-            if url == downloader_module._ARXIV_API_URL:
-                return self._arxiv_api_response("1234.56789v3")
+            if url == "https://arxiv.org/src/1234.56789":
+                return BrokenLatestResponse()
             if url == "https://arxiv.org/src/1234.56789v1":
-                return self._download_response(tar_payload)
+                return self._download_response(tar_payload, filename="arXiv-1234.56789v1.tar.gz")
             return MissingResponse()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1576,8 +1587,7 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(downloaded_code, "1234.56789v1")
         self.assertEqual(
             [call.args[0] for call in get_mock.call_args_list],
-            [downloader_module._ARXIV_API_URL]
-            + ["https://arxiv.org/src/1234.56789v3"] * 3
+            ["https://arxiv.org/src/1234.56789"] * 3
             + ["https://arxiv.org/src/1234.56789v2"] * 3
             + ["https://arxiv.org/src/1234.56789v1"],
         )
@@ -1599,6 +1609,9 @@ class DownloaderTests(unittest.TestCase):
                 pass
 
             def iter_content(self, chunk_size):
+                output_dir = Path("1234.56789v1")
+                self.assertTrue(output_dir.is_dir())
+                self.assertEqual(list(output_dir.iterdir()), [])
                 yield b"partial"
                 raise RuntimeError("stream reset")
 
@@ -1608,9 +1621,6 @@ class DownloaderTests(unittest.TestCase):
                 raise AssertionError(f"Unexpected URL: {url}")
 
             source_attempts += 1
-            output_dir = Path("1234.56789v1")
-            self.assertTrue(output_dir.is_dir())
-            self.assertEqual(list(output_dir.iterdir()), [])
             if source_attempts < 3:
                 return InterruptedResponse()
 
@@ -1699,27 +1709,25 @@ class DownloaderTests(unittest.TestCase):
             def raise_for_status(self):
                 raise RuntimeError("not found")
 
-        def fake_get(url, **kwargs):
-            if url == downloader_module._ARXIV_API_URL:
-                return self._arxiv_api_response("1234.56789v2")
-
-            return MissingResponse()
-
         with tempfile.TemporaryDirectory() as temp_dir:
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
-                with patch("arxiv_latex_merger.downloader.requests.get", side_effect=fake_get):
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=MissingResponse()) as get_mock:
                     with self.assertRaises(downloader_module.SourceDownloadError):
                         downloader_module.download_arxiv_source_files("1234.56789")
             finally:
                 os.chdir(previous_cwd)
 
             root = Path(temp_dir)
-            self.assertFalse((root / "1234.56789v2").exists())
-            self.assertFalse((root / "1234.56789v1").exists())
-            self.assertFalse((root / "1234.56789v2.pdf").exists())
-            self.assertFalse((root / "1234.56789v1.pdf").exists())
+            self.assertFalse((root / "1234.56789").exists())
+            self.assertFalse((root / "1234.56789.pdf").exists())
+
+        self.assertEqual(
+            [call.args[0] for call in get_mock.call_args_list],
+            ["https://arxiv.org/src/1234.56789"] * 3
+            + ["https://arxiv.org/pdf/1234.56789"] * 3,
+        )
 
     def test_download_random_arxiv_papers_downloads_generated_ids_from_source_only(self):
         payload = io.BytesIO()
