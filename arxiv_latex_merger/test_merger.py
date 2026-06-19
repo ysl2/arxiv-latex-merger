@@ -299,6 +299,26 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Abstract body.", merged)
         self.assertNotIn("\\input{section/abs}", merged)
 
+    def test_basedir_absolute_input_alias_resolves_from_source_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{/basedir/00_abstract}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "00_abstract.tex").write_text(
+                "Abstract body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Abstract body.", merged)
+        self.assertNotIn("\\input{/basedir/00_abstract}", merged)
+
     def test_nested_inputs_can_fallback_to_child_file_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

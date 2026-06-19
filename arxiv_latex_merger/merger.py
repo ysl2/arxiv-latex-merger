@@ -190,6 +190,11 @@ _PRESERVED_SYSTEM_INPUT_NAMES = {
 }
 
 
+_ARCHIVE_ROOT_INPUT_ALIASES = {
+    'basedir',
+}
+
+
 def _should_preserve_missing_input(input_relative_path):
     if re.search(r'#+[1-9]', input_relative_path):
         return True
@@ -235,9 +240,34 @@ def _deduplicate_paths(paths):
         yield path
 
 
+def _archive_root_relative_input_paths(input_relative_path):
+    normalized_path = os.path.normpath(input_relative_path)
+    if not os.path.isabs(normalized_path):
+        return []
+
+    relative_path = normalized_path.lstrip(os.sep)
+    if not relative_path:
+        return []
+
+    for alias in _ARCHIVE_ROOT_INPUT_ALIASES:
+        alias_prefix = f"{alias}{os.sep}"
+        if relative_path.startswith(alias_prefix):
+            return [relative_path[len(alias_prefix):]]
+
+    return []
+
+
 def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
     if os.path.isabs(input_relative_path):
-        return [os.path.normpath(input_relative_path)]
+        candidate_paths = [os.path.normpath(input_relative_path)]
+
+        for archive_relative_path in _archive_root_relative_input_paths(input_relative_path):
+            candidate_paths.extend([
+                os.path.normpath(os.path.join(source_root_dir, archive_relative_path)),
+                os.path.normpath(os.path.join(root_dir, archive_relative_path)),
+            ])
+
+        return list(_deduplicate_paths(candidate_paths))
 
     return list(_deduplicate_paths([
         os.path.normpath(os.path.join(root_dir, input_relative_path)),
