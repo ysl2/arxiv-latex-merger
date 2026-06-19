@@ -531,6 +531,45 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\newbox\\insbox", merged)
         self.assertNotIn("\\input{insbox}", merged)
 
+    def test_missing_if_file_exists_input_uses_false_branch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\IfFileExists{rev.tex}{\\input{rev}}{No revision file.}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("No revision file.", merged)
+        self.assertIn("Body.", merged)
+        self.assertNotIn("\\input{rev}", merged)
+
+    def test_existing_if_file_exists_input_uses_true_branch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\IfFileExists{rev.tex}{\\input{rev}}{No revision file.}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "rev.tex").write_text(
+                "Revision notes.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Revision notes.", merged)
+        self.assertNotIn("No revision file.", merged)
+        self.assertNotIn("\\input{rev}", merged)
+
     def test_macro_parameter_input_is_preserved_when_unresolved(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

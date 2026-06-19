@@ -306,6 +306,23 @@ def _archive_root_relative_input_paths(input_relative_path):
     return []
 
 
+def _input_resolution_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
+    candidate_paths = []
+    for input_path_candidate in _input_relative_path_candidates(input_relative_path):
+        for base_path in _input_base_path_candidates(input_path_candidate, file_dir, root_dir, source_root_dir):
+            candidate_paths.extend(_input_path_candidates(base_path))
+
+    return list(_deduplicate_paths(candidate_paths))
+
+
+def _find_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
+    for candidate_path in _input_resolution_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
+        if os.path.isfile(candidate_path):
+            return candidate_path
+
+    return None
+
+
 def _input_relative_path_candidates(input_relative_path):
     yield input_relative_path
 
@@ -334,19 +351,14 @@ def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_
 
 
 def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
-    candidate_paths = []
-    for input_path_candidate in _input_relative_path_candidates(input_relative_path):
-        for base_path in _input_base_path_candidates(input_path_candidate, file_dir, root_dir, source_root_dir):
-            candidate_paths.extend(_input_path_candidates(base_path))
-
-    candidate_paths = list(_deduplicate_paths(candidate_paths))
-    for candidate_path in candidate_paths:
-        if os.path.isfile(candidate_path):
-            return candidate_path
+    input_file_path = _find_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
+    if input_file_path:
+        return input_file_path
 
     if _should_preserve_missing_input(input_relative_path):
         return None
 
+    candidate_paths = _input_resolution_candidates(input_relative_path, file_dir, root_dir, source_root_dir)
     expected_paths = ', '.join(candidate_paths)
     root_display = root_dir or '.'
     raise FileNotFoundError(
@@ -355,7 +367,115 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_roo
     )
 
 
+_IF_FILE_EXISTS_PATTERN = re.compile(r'\\IfFileExists(?![A-Za-z@])')
+
+
+def _skip_horizontal_whitespace(text, index):
+    while index < len(text) and text[index] in (' ', '\t'):
+        index += 1
+
+    return index
+
+
+def _parse_brace_group(text, index):
+    index = _skip_horizontal_whitespace(text, index)
+    if index >= len(text) or text[index] != '{':
+        return None
+
+    depth = 1
+    content_start = index + 1
+    current_index = content_start
+
+    while current_index < len(text):
+        current_char = text[current_index]
+        if current_char == '{' and not _is_escaped(text, current_index):
+            depth += 1
+        elif current_char == '}' and not _is_escaped(text, current_index):
+            depth -= 1
+            if depth == 0:
+                return text[content_start:current_index], current_index + 1
+
+        current_index += 1
+
+    return None
+
+
+def _parse_if_file_exists_command(line, command_end):
+    file_group = _parse_brace_group(line, command_end)
+    if file_group is None:
+        return None
+
+    file_name, next_index = file_group
+    true_group = _parse_brace_group(line, next_index)
+    if true_group is None:
+        return None
+
+    true_branch, next_index = true_group
+    false_group = _parse_brace_group(line, next_index)
+    if false_group is None:
+        return None
+
+    false_branch, command_end = false_group
+    return file_name, true_branch, false_branch, command_end
+
+
+def _process_if_file_exists_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
+    if_file_exists_matches = list(_active_pattern_matches(_IF_FILE_EXISTS_PATTERN, line))
+    if not if_file_exists_matches:
+        return line
+
+    line_parts = []
+    previous_end = 0
+    processed_command = False
+
+    for match in if_file_exists_matches:
+        if match.start() < previous_end:
+            continue
+
+        parsed_command = _parse_if_file_exists_command(line, match.end())
+        if parsed_command is None:
+            continue
+
+        prefix = line[previous_end:match.start()]
+        line_parts.append(prefix)
+        _record_input_path_macros(prefix, input_path_macros)
+
+        file_name, true_branch, false_branch, command_end = parsed_command
+        normalized_file_name = _normalize_input_relative_path(file_name.strip(), input_path_macros)
+        selected_branch = (
+            true_branch
+            if _find_input_file_path(normalized_file_name, file_dir, root_dir, source_root_dir)
+            else false_branch
+        )
+        line_parts.append(
+            _process_input_commands_in_line(
+                selected_branch,
+                input_pattern,
+                file_dir,
+                root_dir,
+                source_root_dir,
+                input_path_macros,
+            )
+        )
+        previous_end = command_end
+        processed_command = True
+
+    if not processed_command:
+        return line
+
+    line_parts.append(line[previous_end:])
+    return ''.join(line_parts)
+
+
 def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
+    line = _process_if_file_exists_commands_in_line(
+        line,
+        input_pattern,
+        file_dir,
+        root_dir,
+        source_root_dir,
+        input_path_macros,
+    )
     input_matches = list(_active_pattern_matches(input_pattern, line))
 
     if not input_matches:
