@@ -306,6 +306,14 @@ def _archive_root_relative_input_paths(input_relative_path):
     return []
 
 
+def _input_relative_path_candidates(input_relative_path):
+    yield input_relative_path
+
+    separator_normalized_path = re.sub(r'\s*/\s*', '/', input_relative_path)
+    if separator_normalized_path != input_relative_path:
+        yield separator_normalized_path
+
+
 def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
     if os.path.isabs(input_relative_path):
         candidate_paths = [os.path.normpath(input_relative_path)]
@@ -327,8 +335,9 @@ def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_
 
 def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
     candidate_paths = []
-    for base_path in _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
-        candidate_paths.extend(_input_path_candidates(base_path))
+    for input_path_candidate in _input_relative_path_candidates(input_relative_path):
+        for base_path in _input_base_path_candidates(input_path_candidate, file_dir, root_dir, source_root_dir):
+            candidate_paths.extend(_input_path_candidates(base_path))
 
     candidate_paths = list(_deduplicate_paths(candidate_paths))
     for candidate_path in candidate_paths:

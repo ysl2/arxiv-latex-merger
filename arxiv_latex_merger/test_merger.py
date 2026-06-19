@@ -226,6 +226,52 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Reference compatibility table.", merged)
         self.assertNotIn("\\input{ table/reference-compatible}", merged)
 
+    def test_input_path_ignores_whitespace_around_separators_when_needed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{sections/ dataset_stats.tex}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "dataset_stats.tex").write_text(
+                "Dataset statistics.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Dataset statistics.", merged)
+        self.assertNotIn("\\input{sections/ dataset_stats.tex}", merged)
+
+    def test_input_path_preserves_real_space_after_separator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{sections/ dataset_stats.tex}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / " dataset_stats.tex").write_text(
+                "Filename with leading space.\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "dataset_stats.tex").write_text(
+                "Filename without leading space.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Filename with leading space.", merged)
+        self.assertNotIn("Filename without leading space.", merged)
+
     def test_escaped_percent_does_not_comment_out_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
