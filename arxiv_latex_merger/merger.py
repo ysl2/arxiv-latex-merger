@@ -183,19 +183,20 @@ def _deduplicate_paths(paths):
         yield path
 
 
-def _input_base_path_candidates(input_relative_path, root_dir, source_root_dir):
+def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
     if os.path.isabs(input_relative_path):
         return [os.path.normpath(input_relative_path)]
 
     return list(_deduplicate_paths([
         os.path.normpath(os.path.join(root_dir, input_relative_path)),
         os.path.normpath(os.path.join(source_root_dir, input_relative_path)),
+        os.path.normpath(os.path.join(file_dir, input_relative_path)),
     ]))
 
 
 def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
     candidate_paths = []
-    for base_path in _input_base_path_candidates(input_relative_path, root_dir, source_root_dir):
+    for base_path in _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_root_dir):
         candidate_paths.extend(_input_path_candidates(base_path))
 
     candidate_paths = list(_deduplicate_paths(candidate_paths))

@@ -274,7 +274,7 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Abstract body.", merged)
         self.assertNotIn("\\input{section/abs}", merged)
 
-    def test_nested_inputs_do_not_fallback_to_child_file_directory(self):
+    def test_nested_inputs_can_fallback_to_child_file_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "sec").mkdir()
@@ -294,11 +294,36 @@ class MergerInputCommentTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaises(FileNotFoundError) as error:
-                merge_tex_files(str(root / "main.tex"), merge_bib=False)
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
 
-        self.assertIn("Expected", str(error.exception))
-        self.assertIn("subsection.tex", str(error.exception))
+        self.assertIn("Nested body.", merged)
+        self.assertNotIn("\\input{subsection}", merged)
+
+    def test_nested_inputs_can_resolve_sibling_directory_from_child_file_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "content").mkdir()
+            (root / "content" / "table").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{content/method}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "content" / "method.tex").write_text(
+                "\\input{table/rl_compatibility}\n",
+                encoding="utf-8",
+            )
+            (root / "content" / "table" / "rl_compatibility.tex").write_text(
+                "RL compatibility table.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("RL compatibility table.", merged)
+        self.assertNotIn("\\input{table/rl_compatibility}", merged)
 
     def test_missing_glyphtounicode_input_is_preserved(self):
         with tempfile.TemporaryDirectory() as temp_dir:
