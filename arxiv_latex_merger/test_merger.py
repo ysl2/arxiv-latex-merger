@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from . import cli as cli_module
 from . import downloader as downloader_module
-from .merger import find_main_tex_file, merge_tex_files
+from .merger import _run_latexmk_with_timeout, find_main_tex_file, merge_tex_files
 
 
 class MergerInputCommentTests(unittest.TestCase):
@@ -699,6 +699,7 @@ class MergerBibliographyTests(unittest.TestCase):
             (root / "latex" / "main.tex").write_text(
                 "\\documentclass{article}\n"
                 "\\begin{document}\n"
+                "Cite \\cite{key}.\n"
                 "\\bibliographystyle{plain}\n"
                 "\\bibliography{latex/refs}\n"
                 "\\end{document}\n",
@@ -710,9 +711,14 @@ class MergerBibliographyTests(unittest.TestCase):
             )
 
             def fake_run(args, **kwargs):
-                self.assertEqual(kwargs["cwd"], str(root))
-                self.assertEqual(args[-1], os.path.join("latex", "main.tex"))
-                (root / "main.bbl").write_text(
+                self.assertEqual(args, ["bibtex", "arxiv_latex_merger_bibtex_fallback"])
+                fallback_root = Path(kwargs["cwd"])
+                aux_content = (fallback_root / "arxiv_latex_merger_bibtex_fallback.aux").read_text(
+                    encoding="utf-8",
+                )
+                self.assertIn("\\bibdata{bib_0}", aux_content)
+                self.assertTrue((fallback_root / "bib_0.bib").is_file())
+                (fallback_root / "arxiv_latex_merger_bibtex_fallback.bbl").write_text(
                     "\\begin{thebibliography}{1}\n"
                     "\\bibitem{key} Generated root-relative reference.\n"
                     "\\end{thebibliography}\n",
@@ -739,6 +745,7 @@ class MergerBibliographyTests(unittest.TestCase):
             (root / "main.tex").write_text(
                 "\\documentclass{article}\n"
                 "\\begin{document}\n"
+                "Cite \\cite{key}.\n"
                 "\\bibliographystyle{plain}\n"
                 "\\bibliography{refs}\n"
                 "\\end{document}\n",
@@ -749,19 +756,21 @@ class MergerBibliographyTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def fake_run(args, **kwargs):
-                (root / "main.bbl").write_text(
-                    "\\begin{thebibliography}{1}\n"
-                    "\\bibitem{key} Generated xelatex reference.\n"
-                    "\\end{thebibliography}\n",
-                    encoding="utf-8",
-                )
-                return subprocess.CompletedProcess(args=args, returncode=0)
+            with patch("arxiv_latex_merger.merger.subprocess.run", return_value=subprocess.CompletedProcess(args=["bibtex"], returncode=1)):
+                with patch("arxiv_latex_merger.merger._run_latexmk_with_timeout") as latexmk_mock:
+                    def fake_latexmk(args, cwd):
+                        (root / "main.bbl").write_text(
+                            "\\begin{thebibliography}{1}\n"
+                            "\\bibitem{key} Generated xelatex reference.\n"
+                            "\\end{thebibliography}\n",
+                            encoding="utf-8",
+                        )
+                        return subprocess.CompletedProcess(args=args, returncode=0)
 
-            with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run) as run_mock:
-                merged, _ = merge_tex_files(str(root / "main.tex"))
+                    latexmk_mock.side_effect = fake_latexmk
+                    merged, _ = merge_tex_files(str(root / "main.tex"))
 
-        run_args = run_mock.call_args.args[0]
+        run_args = latexmk_mock.call_args.args[0]
         self.assertIn("-pdfxe", run_args)
         self.assertNotIn("-pdf", run_args)
         self.assertIn("\\bibitem{key} Generated xelatex reference.", merged)
@@ -849,7 +858,7 @@ class MergerBibliographyTests(unittest.TestCase):
         self.assertNotIn("\\bibliography{refs}", merged)
         self.assertNotIn("\\bibliographystyle{plain}", merged)
 
-    def test_latexmk_failure_falls_back_to_bibtex(self):
+    def test_bibtex_fallback_runs_before_latexmk(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "main.tex").write_text(
@@ -896,9 +905,11 @@ class MergerBibliographyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=args, returncode=0)
 
             with patch("arxiv_latex_merger.merger.subprocess.run", side_effect=fake_run) as run_mock:
-                merged, _ = merge_tex_files(str(root / "main.tex"))
+                with patch("arxiv_latex_merger.merger._run_latexmk_with_timeout") as latexmk_mock:
+                    merged, _ = merge_tex_files(str(root / "main.tex"))
 
-        self.assertEqual(run_mock.call_count, 2)
+        run_mock.assert_called_once()
+        latexmk_mock.assert_not_called()
         self.assertIn("\\bibitem{alpha} Alpha reference.", merged)
         self.assertIn("\\bibitem{beta} Beta reference.", merged)
         self.assertIn("\\bibitem{gamma} Gamma reference.", merged)
@@ -965,14 +976,43 @@ class MergerBibliographyTests(unittest.TestCase):
             stdout = io.StringIO()
             failed = subprocess.CompletedProcess(args=["latexmk"], returncode=1, stderr=b"failed")
             with patch("arxiv_latex_merger.merger.subprocess.run", return_value=failed) as run_mock:
-                with redirect_stdout(stdout):
-                    merged, _ = merge_tex_files(str(root / "main.tex"))
+                with patch("arxiv_latex_merger.merger._run_latexmk_with_timeout", return_value=failed) as latexmk_mock:
+                    with redirect_stdout(stdout):
+                        merged, _ = merge_tex_files(str(root / "main.tex"))
 
-        self.assertEqual(run_mock.call_count, 2)
+        run_mock.assert_called_once()
+        latexmk_mock.assert_called_once()
         self.assertIn("Warning:", stdout.getvalue())
         self.assertIn("\\bibliographystyle{plain}", merged)
         self.assertIn("\\bibliography{refs}", merged)
         self.assertNotIn("\\begin{thebibliography}", merged)
+
+    def test_latexmk_timeout_terminates_process_group(self):
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd=["latexmk"], timeout=timeout)
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.returncode = -15
+
+        fake_process = FakeProcess()
+        with patch("arxiv_latex_merger.merger.subprocess.Popen", return_value=fake_process) as popen_mock:
+            with patch("arxiv_latex_merger.merger.os.killpg") as killpg_mock:
+                result = _run_latexmk_with_timeout(
+                    ["latexmk", "-pdf", "main.tex"],
+                    "/tmp",
+                )
+
+        self.assertEqual(result.returncode, -15)
+        popen_mock.assert_called_once()
+        if os.name == "posix":
+            killpg_mock.assert_called_once_with(fake_process.pid, 15)
 
 
 class MergerRemoveCommentsTests(unittest.TestCase):

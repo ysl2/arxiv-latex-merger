@@ -1,10 +1,15 @@
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+
+LATEXMK_TIMEOUT_SECONDS = 300
+LATEXMK_TERMINATION_GRACE_SECONDS = 5
 
 def read_tex_file(file_path):
     try:
@@ -1059,30 +1064,74 @@ def _latexmk_pdf_mode_arg(source_root_dir):
     return '-pdf'
 
 
+def _start_new_subprocess_group_kwargs():
+    if os.name == 'posix':
+        return {'start_new_session': True}
+
+    return {}
+
+
+def _terminate_subprocess_group(process):
+    if process.poll() is not None:
+        return
+
+    try:
+        if os.name == 'posix':
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=LATEXMK_TERMINATION_GRACE_SECONDS)
+    except ProcessLookupError:
+        return
+    except subprocess.TimeoutExpired:
+        if os.name == 'posix':
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait()
+
+
+def _run_latexmk_with_timeout(args, cwd):
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **_start_new_subprocess_group_kwargs(),
+    )
+
+    try:
+        stdout, stderr = process.communicate(timeout=LATEXMK_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _terminate_subprocess_group(process)
+        return subprocess.CompletedProcess(args=args, returncode=-signal.SIGTERM, stdout=b'', stderr=b'latexmk timed out')
+
+    return subprocess.CompletedProcess(args=args, returncode=process.returncode, stdout=stdout, stderr=stderr)
+
+
 def _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=None):
     any_success = False
     latexmk_pdf_mode_arg = _latexmk_pdf_mode_arg(source_root_dir)
 
     for work_dir, main_tex_argument in _latexmk_run_candidates(main_tex_path, source_root_dir, preferred_work_dirs):
+        args = [
+            'latexmk',
+            latexmk_pdf_mode_arg,
+            '-interaction=nonstopmode',
+            '-halt-on-error',
+            main_tex_argument,
+        ]
         try:
-            result = subprocess.run(
-                [
-                    'latexmk',
-                    latexmk_pdf_mode_arg,
-                    '-interaction=nonstopmode',
-                    '-halt-on-error',
-                    main_tex_argument,
-                ],
-                cwd=work_dir,
-                check=False,
-                capture_output=True,
-            )
+            result = _run_latexmk_with_timeout(args, work_dir)
         except FileNotFoundError:
             print("Warning: latexmk was not found; trying BibTeX fallback.")
             return False
 
         if result.returncode == 0:
             any_success = True
+            break
+        if result.returncode == -signal.SIGTERM:
+            print(f"Warning: latexmk timed out for {main_tex_path}; trying BibTeX fallback.")
             break
 
     if not any_success:
@@ -1157,16 +1206,16 @@ def _generate_bbl_file_with_bibtex_fallback(file_lines, main_tex_path, source_ro
                 env=env,
             )
         except FileNotFoundError:
-            print("Warning: bibtex was not found; bibliography could not be inlined.")
+            print("Warning: bibtex was not found; trying latexmk if available.")
             return False
 
         if result.returncode != 0:
-            print(f"Warning: bibtex fallback failed for {main_tex_path}; bibliography could not be inlined.")
+            print(f"Warning: bibtex generation failed for {main_tex_path}; trying latexmk if available.")
             return False
 
         fallback_bbl_path = os.path.join(temp_dir, f'{aux_base_name}.bbl')
         if not os.path.isfile(fallback_bbl_path):
-            print(f"Warning: bibtex fallback did not produce a .bbl file for {main_tex_path}.")
+            print(f"Warning: bibtex did not produce a .bbl file for {main_tex_path}; trying latexmk if available.")
             return False
 
         target_bbl_path = _bbl_file_path_candidates(main_tex_path, source_root_dir)[0]
@@ -1193,15 +1242,15 @@ def process_bibliography_commands(file_lines, main_tex_path):
             source_root_dir,
         )
         if bibliography_work_dirs:
-            _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=bibliography_work_dirs)
+            _generate_bbl_file_with_bibtex_fallback(
+                file_lines,
+                main_tex_path,
+                source_root_dir,
+                bibliography_commands,
+            )
             bbl_file_path = _first_existing_path(bbl_file_paths)
             if not bbl_file_path:
-                _generate_bbl_file_with_bibtex_fallback(
-                    file_lines,
-                    main_tex_path,
-                    source_root_dir,
-                    bibliography_commands,
-                )
+                _generate_bbl_file(main_tex_path, source_root_dir, preferred_work_dirs=bibliography_work_dirs)
                 bbl_file_path = _first_existing_path(bbl_file_paths)
         else:
             print(f"Warning: bibliography command found in {main_tex_path}, but no .bib file was found.")
