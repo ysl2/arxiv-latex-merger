@@ -129,6 +129,54 @@ def _replace_active_matches(line, matches, replacement):
     return ''.join(output_parts)
 
 
+_TEX_CONDITIONAL_PATTERN = re.compile(r'\\(if[a-zA-Z@]*|fi)(?![a-zA-Z@])')
+
+
+def _active_tex_conditional_matches(line):
+    return _active_pattern_matches(_TEX_CONDITIONAL_PATTERN, line)
+
+
+def _first_active_iffalse_match(line):
+    for match in _active_tex_conditional_matches(line):
+        if match.group(1) == 'iffalse':
+            return match
+
+    return None
+
+
+def _false_conditional_segments(line, false_conditional_depth):
+    segments = []
+    active_start = 0
+    inactive_start = 0 if false_conditional_depth else None
+
+    for match in _active_tex_conditional_matches(line):
+        command = match.group(1)
+
+        if false_conditional_depth:
+            if command.startswith('if'):
+                false_conditional_depth += 1
+            elif command == 'fi':
+                false_conditional_depth -= 1
+                if false_conditional_depth == 0:
+                    segments.append((line[inactive_start:match.end()], False))
+                    active_start = match.end()
+                    inactive_start = None
+            continue
+
+        if command == 'iffalse':
+            if active_start < match.start():
+                segments.append((line[active_start:match.start()], True))
+            false_conditional_depth = 1
+            inactive_start = match.start()
+
+    if false_conditional_depth:
+        segments.append((line[inactive_start:], False))
+    elif active_start < len(line):
+        segments.append((line[active_start:], True))
+
+    return segments, false_conditional_depth
+
+
 def _input_path_candidates(file_path):
     yield file_path
 
@@ -244,6 +292,28 @@ def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, sou
     return ''.join(line_parts)
 
 
+def _process_input_commands_with_conditionals(
+    line,
+    input_pattern,
+    file_dir,
+    root_dir,
+    source_root_dir,
+    false_conditional_depth,
+):
+    segments, false_conditional_depth = _false_conditional_segments(line, false_conditional_depth)
+    output_parts = []
+
+    for segment, is_active in segments:
+        if is_active:
+            output_parts.append(
+                _process_input_commands_in_line(segment, input_pattern, file_dir, root_dir, source_root_dir)
+            )
+        else:
+            output_parts.append(segment)
+
+    return ''.join(output_parts), false_conditional_depth
+
+
 def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=None):
     if root_dir is None:
         root_dir = file_dir
@@ -254,8 +324,21 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
     output_lines = []
     in_comment_environment = False
     literal_environment = None
+    false_conditional_depth = 0
 
     for line in file_lines:
+        if false_conditional_depth:
+            processed_line, false_conditional_depth = _process_input_commands_with_conditionals(
+                line,
+                input_pattern,
+                file_dir,
+                root_dir,
+                source_root_dir,
+                false_conditional_depth,
+            )
+            output_lines.append(processed_line)
+            continue
+
         if in_comment_environment:
             output_lines.append(line)
             if _first_active_environment_match(line, 'end', {'comment'}):
@@ -270,6 +353,28 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
 
         comment_begin = _first_active_environment_match(line, 'begin', {'comment'})
         literal_begin = _first_active_environment_match(line, 'begin', _LITERAL_ENVIRONMENTS)
+        false_begin = _first_active_iffalse_match(line)
+
+        if false_begin:
+            earliest_environment_begin = None
+            for environment_begin in (comment_begin, literal_begin):
+                if environment_begin and (
+                    earliest_environment_begin is None
+                    or environment_begin.start() < earliest_environment_begin.start()
+                ):
+                    earliest_environment_begin = environment_begin
+
+            if earliest_environment_begin is None or false_begin.start() < earliest_environment_begin.start():
+                processed_line, false_conditional_depth = _process_input_commands_with_conditionals(
+                    line,
+                    input_pattern,
+                    file_dir,
+                    root_dir,
+                    source_root_dir,
+                    false_conditional_depth,
+                )
+                output_lines.append(processed_line)
+                continue
 
         if comment_begin and (not literal_begin or comment_begin.start() < literal_begin.start()):
             prefix = line[:comment_begin.start()]

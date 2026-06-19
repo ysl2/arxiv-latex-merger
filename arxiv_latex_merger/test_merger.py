@@ -111,6 +111,31 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Section body.", merged)
         self.assertNotIn("\\input{section}", merged)
 
+    def test_inputs_inside_iffalse_block_are_not_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{section}\n"
+                "\\iffalse\n"
+                "\\input{missing}\n"
+                "\\fi\n"
+                "\\input{appendix}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text("Section body.\n", encoding="utf-8")
+            (root / "appendix.tex").write_text("Appendix body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Section body.", merged)
+        self.assertIn("\\input{missing}", merged)
+        self.assertIn("Appendix body.", merged)
+        self.assertNotIn("\\input{section}", merged)
+        self.assertNotIn("\\input{appendix}", merged)
+
     def test_active_inputs_in_child_files_are_processed_recursively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
