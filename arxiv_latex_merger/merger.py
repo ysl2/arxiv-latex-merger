@@ -371,7 +371,7 @@ _IF_FILE_EXISTS_PATTERN = re.compile(r'\\IfFileExists(?![A-Za-z@])')
 
 
 def _skip_horizontal_whitespace(text, index):
-    while index < len(text) and text[index] in (' ', '\t'):
+    while index < len(text) and text[index].isspace():
         index += 1
 
     return index
@@ -467,6 +467,108 @@ def _process_if_file_exists_commands_in_line(line, input_pattern, file_dir, root
     return ''.join(line_parts)
 
 
+def _first_incomplete_if_file_exists_match(line):
+    for match in _active_pattern_matches(_IF_FILE_EXISTS_PATTERN, line):
+        if _parse_if_file_exists_command(line, match.end()) is None:
+            return match
+
+    return None
+
+
+def _collect_if_file_exists_command(file_lines, start_index, command_start):
+    command_text_parts = []
+
+    for end_index in range(start_index, len(file_lines)):
+        line = file_lines[end_index]
+        if end_index == start_index:
+            command_text_parts.append(line[command_start:])
+        else:
+            command_text_parts.append(line)
+
+        command_text = ''.join(command_text_parts)
+        parsed_command = _parse_if_file_exists_command(command_text, len(r'\IfFileExists'))
+        if parsed_command is not None:
+            return command_text, parsed_command, end_index
+
+    return None
+
+
+def _text_to_lines(text):
+    if not text:
+        return []
+
+    return text.splitlines(keepends=True)
+
+
+def _process_multiline_if_file_exists_command(
+    file_lines,
+    line_index,
+    input_pattern,
+    file_dir,
+    root_dir,
+    source_root_dir,
+    input_path_macros,
+):
+    line = file_lines[line_index]
+    match = _first_incomplete_if_file_exists_match(line)
+    if not match:
+        return None
+
+    collected_command = _collect_if_file_exists_command(file_lines, line_index, match.start())
+    if collected_command is None:
+        return None
+
+    command_text, parsed_command, end_index = collected_command
+    file_name, true_branch, false_branch, command_end = parsed_command
+
+    prefix = line[:match.start()]
+    _record_input_path_macros(prefix, input_path_macros)
+
+    normalized_file_name = _normalize_input_relative_path(file_name.strip(), input_path_macros)
+    selected_branch = (
+        true_branch
+        if _find_input_file_path(normalized_file_name, file_dir, root_dir, source_root_dir)
+        else false_branch
+    )
+    suffix = command_text[command_end:]
+
+    output_lines = []
+    if prefix:
+        output_lines.append(
+            _process_input_commands_in_line(
+                prefix,
+                input_pattern,
+                file_dir,
+                root_dir,
+                source_root_dir,
+                input_path_macros,
+            )
+        )
+
+    output_lines.extend(
+        process_input_commands(
+            _text_to_lines(selected_branch),
+            file_dir,
+            root_dir,
+            source_root_dir,
+            input_path_macros,
+        )
+    )
+
+    if suffix:
+        output_lines.extend(
+            process_input_commands(
+                _text_to_lines(suffix),
+                file_dir,
+                root_dir,
+                source_root_dir,
+                input_path_macros,
+            )
+        )
+
+    return output_lines, end_index
+
+
 def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
     line = _process_if_file_exists_commands_in_line(
         line,
@@ -560,7 +662,10 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
     literal_environment = None
     false_conditional_depth = 0
 
-    for line in file_lines:
+    line_index = 0
+    while line_index < len(file_lines):
+        line = file_lines[line_index]
+
         if false_conditional_depth:
             processed_line, false_conditional_depth = _process_input_commands_with_conditionals(
                 line,
@@ -572,18 +677,21 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
                 false_conditional_depth,
             )
             output_lines.append(processed_line)
+            line_index += 1
             continue
 
         if in_comment_environment:
             output_lines.append(line)
             if _first_active_environment_match(line, 'end', {'comment'}):
                 in_comment_environment = False
+            line_index += 1
             continue
 
         if literal_environment:
             output_lines.append(line)
             if _first_active_environment_match(line, 'end', {literal_environment}):
                 literal_environment = None
+            line_index += 1
             continue
 
         comment_begin = _first_active_environment_match(line, 'begin', {'comment'})
@@ -610,6 +718,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
                     false_conditional_depth,
                 )
                 output_lines.append(processed_line)
+                line_index += 1
                 continue
 
         if comment_begin and (not literal_begin or comment_begin.start() < literal_begin.start()):
@@ -627,6 +736,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             )
             if not _first_active_environment_match(line, 'end', {'comment'}, start_after=comment_begin.start()):
                 in_comment_environment = True
+            line_index += 1
             continue
 
         if literal_begin:
@@ -645,6 +755,22 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             literal_environment = literal_begin.group(1)
             if _first_active_environment_match(line, 'end', {literal_environment}, start_after=literal_begin.start()):
                 literal_environment = None
+            line_index += 1
+            continue
+
+        multiline_if_result = _process_multiline_if_file_exists_command(
+            file_lines,
+            line_index,
+            input_pattern,
+            file_dir,
+            root_dir,
+            source_root_dir,
+            input_path_macros,
+        )
+        if multiline_if_result is not None:
+            processed_lines, end_index = multiline_if_result
+            output_lines.extend(processed_lines)
+            line_index = end_index + 1
             continue
 
         output_lines.append(
@@ -657,6 +783,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
                 input_path_macros,
             )
         )
+        line_index += 1
 
     return output_lines
 

@@ -570,6 +570,43 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertNotIn("No revision file.", merged)
         self.assertNotIn("\\input{rev}", merged)
 
+    def test_multiline_if_file_exists_selects_one_input_branch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "common").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\IfFileExists{common/0abs_cr.tex}{\n"
+                "  \\input{common/0abs_cr}\n"
+                "}{\n"
+                "  \\input{common/0abs}\n"
+                "}\n"
+                "\\IfFileExists{common/1intro_cr.tex}{\n"
+                "  \\input{common/1intro_cr}\n"
+                "}{\n"
+                "  \\input{common/1intro}\n"
+                "}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "common" / "0abs.tex").write_text(
+                "Abstract body.\n",
+                encoding="utf-8",
+            )
+            (root / "common" / "1intro_cr.tex").write_text(
+                "Camera-ready intro.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Abstract body.", merged)
+        self.assertIn("Camera-ready intro.", merged)
+        self.assertNotIn("\\input{common/0abs_cr}", merged)
+        self.assertNotIn("\\input{common/0abs}", merged)
+        self.assertNotIn("\\input{common/1intro}", merged)
+
     def test_macro_parameter_input_is_preserved_when_unresolved(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
