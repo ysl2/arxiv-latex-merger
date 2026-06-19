@@ -190,6 +190,9 @@ _PRESERVED_SYSTEM_INPUT_NAMES = {
 
 
 def _should_preserve_missing_input(input_relative_path):
+    if re.search(r'#+[1-9]', input_relative_path):
+        return True
+
     normalized_path = os.path.normpath(input_relative_path)
 
     if os.path.isabs(normalized_path):

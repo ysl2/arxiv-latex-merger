@@ -388,6 +388,28 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\pdfglyphtounicode{A}{0041}", merged)
         self.assertNotIn("\\input{glyphtounicode}", merged)
 
+    def test_macro_parameter_input_is_preserved_when_unresolved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\newcommand{\\loadsection}[1]{\\input{#1}}\n"
+                "\\input{section}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "section.tex").write_text(
+                "Section body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\newcommand{\\loadsection}[1]{\\input{#1}}", merged)
+        self.assertIn("Section body.", merged)
+        self.assertNotIn("\\input{section}", merged)
+
 
 class MergerBibliographyTests(unittest.TestCase):
     def test_existing_bbl_is_inlined_and_bibliography_commands_are_removed(self):
