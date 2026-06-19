@@ -319,6 +319,28 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("Abstract body.", merged)
         self.assertNotIn("\\input{/basedir/00_abstract}", merged)
 
+    def test_input_path_macro_is_expanded_before_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\newcommand{\\basedir}{sections}\n"
+                "\\begin{document}\n"
+                "\\input{\\basedir/00_abstract}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "00_abstract.tex").write_text(
+                "Abstract body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("Abstract body.", merged)
+        self.assertNotIn("\\input{\\basedir/00_abstract}", merged)
+
     def test_nested_inputs_can_fallback_to_child_file_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

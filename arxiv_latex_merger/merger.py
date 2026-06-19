@@ -195,6 +195,54 @@ _ARCHIVE_ROOT_INPUT_ALIASES = {
 }
 
 
+_INPUT_PATH_MACRO_DEFINITION_PATTERNS = [
+    re.compile(r'\\(?:newcommand|renewcommand|providecommand)\*?\s*\{\\([A-Za-z@]+)\}\s*\{([^{}#\\]+)\}'),
+    re.compile(r'\\def\\([A-Za-z@]+)\s*\{([^{}#\\]+)\}'),
+]
+
+
+def _record_input_path_macros(line, input_path_macros):
+    for pattern in _INPUT_PATH_MACRO_DEFINITION_PATTERNS:
+        for match in _active_pattern_matches(pattern, line):
+            macro_value = match.group(2).strip()
+            if macro_value:
+                input_path_macros[match.group(1)] = macro_value
+
+
+def _expand_input_path_macros(input_relative_path, input_path_macros):
+    output_parts = []
+    current_index = 0
+
+    while current_index < len(input_relative_path):
+        current_char = input_relative_path[current_index]
+        if current_char != '\\':
+            output_parts.append(current_char)
+            current_index += 1
+            continue
+
+        macro_match = re.match(r'\\([A-Za-z@]+)', input_relative_path[current_index:])
+        if not macro_match:
+            output_parts.append(current_char)
+            current_index += 1
+            continue
+
+        macro_name = macro_match.group(1)
+        macro_value = input_path_macros.get(macro_name)
+        if macro_value is None:
+            output_parts.append(macro_match.group(0))
+        else:
+            output_parts.append(macro_value)
+
+        current_index += len(macro_match.group(0))
+
+    return ''.join(output_parts)
+
+
+def _normalize_input_relative_path(input_relative_path, input_path_macros):
+    expanded_path = _expand_input_path_macros(input_relative_path, input_path_macros)
+    return expanded_path.replace('\\', '/')
+
+
 def _should_preserve_missing_input(input_relative_path):
     if re.search(r'#+[1-9]', input_relative_path):
         return True
@@ -297,18 +345,22 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_roo
     )
 
 
-def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir):
+def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
     input_matches = list(_active_pattern_matches(input_pattern, line))
 
     if not input_matches:
+        _record_input_path_macros(line, input_path_macros)
         return line
 
     line_parts = []
     previous_end = 0
 
     for match in input_matches:
-        line_parts.append(line[previous_end:match.start()])
-        input_relative_path = match.group(1).strip().replace('\\', '/')
+        prefix = line[previous_end:match.start()]
+        line_parts.append(prefix)
+        _record_input_path_macros(prefix, input_path_macros)
+
+        input_relative_path = _normalize_input_relative_path(match.group(1).strip(), input_path_macros)
         input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
         if input_file_path is None:
             line_parts.append(match.group(0))
@@ -318,11 +370,19 @@ def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, sou
         input_file_dir = os.path.dirname(input_file_path)
         input_file_lines, _ = read_tex_file(input_file_path)
 
-        input_file_content = process_input_commands(input_file_lines, input_file_dir, root_dir, source_root_dir)
+        input_file_content = process_input_commands(
+            input_file_lines,
+            input_file_dir,
+            root_dir,
+            source_root_dir,
+            input_path_macros,
+        )
         line_parts.append(''.join(input_file_content))
         previous_end = match.end()
 
-    line_parts.append(line[previous_end:])
+    suffix = line[previous_end:]
+    line_parts.append(suffix)
+    _record_input_path_macros(suffix, input_path_macros)
     return ''.join(line_parts)
 
 
@@ -332,6 +392,7 @@ def _process_input_commands_with_conditionals(
     file_dir,
     root_dir,
     source_root_dir,
+    input_path_macros,
     false_conditional_depth,
 ):
     segments, false_conditional_depth = _false_conditional_segments(line, false_conditional_depth)
@@ -340,7 +401,14 @@ def _process_input_commands_with_conditionals(
     for segment, is_active in segments:
         if is_active:
             output_parts.append(
-                _process_input_commands_in_line(segment, input_pattern, file_dir, root_dir, source_root_dir)
+                _process_input_commands_in_line(
+                    segment,
+                    input_pattern,
+                    file_dir,
+                    root_dir,
+                    source_root_dir,
+                    input_path_macros,
+                )
             )
         else:
             output_parts.append(segment)
@@ -348,11 +416,13 @@ def _process_input_commands_with_conditionals(
     return ''.join(output_parts), false_conditional_depth
 
 
-def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=None):
+def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=None, input_path_macros=None):
     if root_dir is None:
         root_dir = file_dir
     if source_root_dir is None:
         source_root_dir = _find_source_root_dir(root_dir)
+    if input_path_macros is None:
+        input_path_macros = {}
 
     input_pattern = re.compile(r'\\input\{(.+?)\}')
     output_lines = []
@@ -368,6 +438,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
                 file_dir,
                 root_dir,
                 source_root_dir,
+                input_path_macros,
                 false_conditional_depth,
             )
             output_lines.append(processed_line)
@@ -405,6 +476,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
                     file_dir,
                     root_dir,
                     source_root_dir,
+                    input_path_macros,
                     false_conditional_depth,
                 )
                 output_lines.append(processed_line)
@@ -414,7 +486,14 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             prefix = line[:comment_begin.start()]
             suffix = line[comment_begin.start():]
             output_lines.append(
-                _process_input_commands_in_line(prefix, input_pattern, file_dir, root_dir, source_root_dir) + suffix
+                _process_input_commands_in_line(
+                    prefix,
+                    input_pattern,
+                    file_dir,
+                    root_dir,
+                    source_root_dir,
+                    input_path_macros,
+                ) + suffix
             )
             if not _first_active_environment_match(line, 'end', {'comment'}, start_after=comment_begin.start()):
                 in_comment_environment = True
@@ -424,7 +503,14 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             prefix = line[:literal_begin.start()]
             suffix = line[literal_begin.start():]
             output_lines.append(
-                _process_input_commands_in_line(prefix, input_pattern, file_dir, root_dir, source_root_dir) + suffix
+                _process_input_commands_in_line(
+                    prefix,
+                    input_pattern,
+                    file_dir,
+                    root_dir,
+                    source_root_dir,
+                    input_path_macros,
+                ) + suffix
             )
             literal_environment = literal_begin.group(1)
             if _first_active_environment_match(line, 'end', {literal_environment}, start_after=literal_begin.start()):
@@ -432,7 +518,14 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             continue
 
         output_lines.append(
-            _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir)
+            _process_input_commands_in_line(
+                line,
+                input_pattern,
+                file_dir,
+                root_dir,
+                source_root_dir,
+                input_path_macros,
+            )
         )
 
     return output_lines
