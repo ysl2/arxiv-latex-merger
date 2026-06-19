@@ -447,6 +447,23 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("\\input{insbox}", merged)
         self.assertIn("Body.", merged)
 
+    def test_missing_epsf_input_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\input{epsf}\n"
+                "\\begin{document}\n"
+                "Body.\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\input{epsf}", merged)
+        self.assertIn("Body.", merged)
+
     def test_local_insbox_input_is_still_processed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
