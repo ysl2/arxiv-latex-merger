@@ -1531,13 +1531,11 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(downloaded_code, "1234.56789v1")
         self.assertEqual(
             [call.args[0] for call in get_mock.call_args_list],
-            [
-                downloader_module._ARXIV_API_URL,
-                "https://arxiv.org/src/1234.56789v2",
-                "https://arxiv.org/src/1234.56789v1",
-                "https://arxiv.org/pdf/1234.56789v2",
-                "https://arxiv.org/pdf/1234.56789v1",
-            ],
+            [downloader_module._ARXIV_API_URL]
+            + ["https://arxiv.org/src/1234.56789v2"] * 3
+            + ["https://arxiv.org/src/1234.56789v1"] * 3
+            + ["https://arxiv.org/pdf/1234.56789v2"] * 3
+            + ["https://arxiv.org/pdf/1234.56789v1"],
         )
 
     def test_download_arxiv_source_files_falls_back_through_source_versions_before_pdf(self):
@@ -1578,12 +1576,65 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(downloaded_code, "1234.56789v1")
         self.assertEqual(
             [call.args[0] for call in get_mock.call_args_list],
-            [
-                downloader_module._ARXIV_API_URL,
-                "https://arxiv.org/src/1234.56789v3",
-                "https://arxiv.org/src/1234.56789v2",
-                "https://arxiv.org/src/1234.56789v1",
-            ],
+            [downloader_module._ARXIV_API_URL]
+            + ["https://arxiv.org/src/1234.56789v3"] * 3
+            + ["https://arxiv.org/src/1234.56789v2"] * 3
+            + ["https://arxiv.org/src/1234.56789v1"],
+        )
+
+    def test_download_arxiv_source_files_retries_partial_source_downloads_with_clean_dirs(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"\\documentclass{article}\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_payload = payload.getvalue()
+        source_attempts = 0
+
+        class InterruptedResponse:
+            headers = {"content-length": "100"}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield b"partial"
+                raise RuntimeError("stream reset")
+
+        def fake_get(url, **kwargs):
+            nonlocal source_attempts
+            if url != "https://arxiv.org/src/1234.56789v1":
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            source_attempts += 1
+            output_dir = Path("1234.56789v1")
+            self.assertTrue(output_dir.is_dir())
+            self.assertEqual(list(output_dir.iterdir()), [])
+            if source_attempts < 3:
+                return InterruptedResponse()
+
+            return self._download_response(tar_payload)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get", side_effect=fake_get) as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files("1234.56789v1")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789v1"
+            self.assertTrue((output_dir / "main.tex").exists())
+            self.assertFalse((output_dir / "1234.56789v1.tar.gz").exists())
+
+        self.assertEqual(downloaded_code, "1234.56789v1")
+        self.assertEqual(source_attempts, 3)
+        self.assertEqual(
+            [call.args[0] for call in get_mock.call_args_list],
+            ["https://arxiv.org/src/1234.56789v1"] * 3,
         )
 
     def test_download_arxiv_source_files_removes_empty_output_dir_after_download_error(self):
@@ -1640,6 +1691,35 @@ class DownloaderTests(unittest.TestCase):
             self.assertFalse(output_dir.exists())
 
         self.assertIn("Downloaded source for 1234.56789v1 contained no files", str(error.exception))
+
+    def test_download_arxiv_source_files_removes_all_dirs_after_all_versions_fail(self):
+        class MissingResponse:
+            headers = {}
+
+            def raise_for_status(self):
+                raise RuntimeError("not found")
+
+        def fake_get(url, **kwargs):
+            if url == downloader_module._ARXIV_API_URL:
+                return self._arxiv_api_response("1234.56789v2")
+
+            return MissingResponse()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get", side_effect=fake_get):
+                    with self.assertRaises(downloader_module.SourceDownloadError):
+                        downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            root = Path(temp_dir)
+            self.assertFalse((root / "1234.56789v2").exists())
+            self.assertFalse((root / "1234.56789v1").exists())
+            self.assertFalse((root / "1234.56789v2.pdf").exists())
+            self.assertFalse((root / "1234.56789v1.pdf").exists())
 
     def test_download_random_arxiv_papers_downloads_generated_ids_from_source_only(self):
         payload = io.BytesIO()
@@ -1717,8 +1797,6 @@ class DownloaderTests(unittest.TestCase):
 
         self.assertEqual(
             get_mock.call_args_list,
-            [
-                call("https://arxiv.org/src/2304.9319v1", stream=True),
-                call("https://arxiv.org/pdf/2304.9319v1", stream=True),
-            ],
+            [call("https://arxiv.org/src/2304.9319v1", stream=True)] * 3
+            + [call("https://arxiv.org/pdf/2304.9319v1", stream=True)] * 3,
         )

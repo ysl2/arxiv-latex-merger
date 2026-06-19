@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import shutil
 import tarfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -15,6 +16,7 @@ class SourceDownloadError(RuntimeError):
 _ARXIV_API_URL = "https://export.arxiv.org/api/query"
 _ARXIV_VERSION_PATTERN = re.compile(r"^(?P<base>.+?)v(?P<version>\d+)$")
 _ATOM_NAMESPACE = {"atom": "http://www.w3.org/2005/Atom"}
+_DOWNLOAD_ATTEMPTS = 3
 
 
 def split_arxiv_code_version(arxiv_code):
@@ -83,6 +85,7 @@ def _download_file_with_progress(url, path, desc):
     except ValueError:
         total_size = None
 
+    downloaded_size = 0
     with open(path, "wb") as output_file:
         with tqdm(
             total=total_size,
@@ -94,7 +97,13 @@ def _download_file_with_progress(url, path, desc):
             for chunk in response.iter_content(chunk_size=64 * 1024):
                 if chunk:
                     output_file.write(chunk)
+                    downloaded_size += len(chunk)
                     progress_bar.update(len(chunk))
+
+    if total_size is not None and downloaded_size != total_size:
+        raise IOError(
+            f"Downloaded {downloaded_size} bytes from {url}, expected {total_size} bytes."
+        )
 
 
 def _is_pdf_file(path):
@@ -103,10 +112,17 @@ def _is_pdf_file(path):
 
 
 def _move_downloaded_pdf(downloaded_path, output_dir, arxiv_code):
-    pdf_arxiv_id = arxiv_code.replace('/', '_')
-    pdf_path = os.path.join(output_dir, f"{pdf_arxiv_id}.pdf")
+    pdf_path = os.path.join(output_dir, _pdf_file_name(arxiv_code))
     os.replace(downloaded_path, pdf_path)
     return pdf_path
+
+
+def _pdf_file_name(arxiv_code):
+    return f"{arxiv_code.replace('/', '_')}.pdf"
+
+
+def _pdf_symlink_path(output_dir, arxiv_code):
+    return Path(output_dir).parent / _pdf_file_name(arxiv_code)
 
 
 def _create_relative_pdf_symlink(pdf_path, output_dir):
@@ -124,18 +140,58 @@ def _create_relative_pdf_symlink(pdf_path, output_dir):
     return link_path
 
 
-def _remove_output_dir_if_empty(output_dir):
-    try:
-        Path(output_dir).rmdir()
-    except OSError:
-        return False
-
-    return True
+def _remove_pdf_symlink(output_dir, arxiv_code):
+    link_path = _pdf_symlink_path(output_dir, arxiv_code)
+    if link_path.is_symlink():
+        link_path.unlink()
 
 
-def _download_arxiv_source_version(arxiv_code):
+def _clear_download_artifacts(output_dir, arxiv_code):
+    _remove_pdf_symlink(output_dir, arxiv_code)
+
+    output_path = Path(output_dir)
+    if output_path.is_symlink() or output_path.is_file():
+        output_path.unlink()
+    elif output_path.is_dir():
+        shutil.rmtree(output_path)
+
+
+def _format_attempt_errors(attempt_errors):
+    return '; '.join(f"{code}: {error}" for code, error in attempt_errors)
+
+
+def _format_retry_errors(errors):
+    return '; '.join(f"attempt {index}: {error}" for index, error in enumerate(errors, start=1))
+
+
+def _run_download_attempts(arxiv_code, media_name, download_once):
     output_dir = arxiv_code
-    removed_empty_output_dir = False
+    errors = []
+
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        _clear_download_artifacts(output_dir, arxiv_code)
+        try:
+            return download_once()
+        except KeyboardInterrupt:
+            _clear_download_artifacts(output_dir, arxiv_code)
+            raise
+        except SourceDownloadError as error:
+            errors.append(error)
+            _clear_download_artifacts(output_dir, arxiv_code)
+            if attempt < _DOWNLOAD_ATTEMPTS:
+                print(
+                    f"{media_name} download attempt {attempt}/{_DOWNLOAD_ATTEMPTS} "
+                    f"failed for {arxiv_code}: {error}; retrying."
+                )
+
+    raise SourceDownloadError(
+        f"Could not download {media_name.lower()} for {arxiv_code} after "
+        f"{_DOWNLOAD_ATTEMPTS} attempts: {_format_retry_errors(errors)}"
+    )
+
+
+def _download_arxiv_source_version_once(arxiv_code):
+    output_dir = arxiv_code
 
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -158,6 +214,9 @@ def _download_arxiv_source_version(arxiv_code):
         try:
             with tarfile.open(tar_file, "r:gz") as tar:
                 members = tar.getmembers()
+                if not members:
+                    raise SourceDownloadError(f"Downloaded source for {arxiv_code} contained no files.")
+
                 with tqdm(
                     total=len(members),
                     unit="file",
@@ -180,20 +239,22 @@ def _download_arxiv_source_version(arxiv_code):
         raise
     except Exception as error:
         raise SourceDownloadError(f"Could not download source files for {arxiv_code}: {error}") from error
-    finally:
-        removed_empty_output_dir = _remove_output_dir_if_empty(output_dir)
-
-    if removed_empty_output_dir:
-        raise SourceDownloadError(f"Downloaded source for {arxiv_code} contained no files.")
-
     print(f"Successfully downloaded and extracted source files to {output_dir} directory")
     return arxiv_code
 
 
-def _download_arxiv_pdf_version(arxiv_code):
+def _download_arxiv_source_version(arxiv_code):
+    return _run_download_attempts(
+        arxiv_code,
+        "Source",
+        lambda: _download_arxiv_source_version_once(arxiv_code),
+    )
+
+
+def _download_arxiv_pdf_version_once(arxiv_code):
     output_dir = arxiv_code
-    removed_empty_output_dir = False
     temporary_pdf_path = None
+    symlink_path = None
 
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -218,11 +279,6 @@ def _download_arxiv_pdf_version(arxiv_code):
         if temporary_pdf_path and os.path.exists(temporary_pdf_path):
             os.remove(temporary_pdf_path)
         raise SourceDownloadError(f"Could not download PDF for {arxiv_code}: {error}") from error
-    finally:
-        removed_empty_output_dir = _remove_output_dir_if_empty(output_dir)
-
-    if removed_empty_output_dir:
-        raise SourceDownloadError(f"Downloaded PDF for {arxiv_code} contained no files.")
 
     if symlink_path:
         print(f"Created relative PDF symlink at {symlink_path}")
@@ -230,8 +286,12 @@ def _download_arxiv_pdf_version(arxiv_code):
     return arxiv_code
 
 
-def _format_attempt_errors(attempt_errors):
-    return '; '.join(f"{code}: {error}" for code, error in attempt_errors)
+def _download_arxiv_pdf_version(arxiv_code):
+    return _run_download_attempts(
+        arxiv_code,
+        "PDF",
+        lambda: _download_arxiv_pdf_version_once(arxiv_code),
+    )
 
 
 def download_arxiv_source_files(arxiv_code):

@@ -28,7 +28,7 @@ arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 [...]
 
 This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files with the downloaded arXiv version in the filename, such as `2304.09319v1.tex` and `1812.09740v2.tex`.
 
-When a code is passed without an explicit version, the tool looks up the latest arXiv version first. If the latest source archive cannot be downloaded, it falls back through older source versions in descending order, for example `v3`, `v2`, `v1`. If no source version is available, it downloads the latest PDF and then falls back through older PDF versions in the same order. Downloaded source/PDF directories also include the version, for example `2304.09319v1/`.
+When a code is passed without an explicit version, the tool looks up the latest arXiv version first. If the latest source archive cannot be downloaded, it falls back through older source versions in descending order, for example `v3`, `v2`, `v1`. If no source version is available, it downloads the latest PDF and then falls back through older PDF versions in the same order. Each source/PDF download is retried up to three times before falling back, and failed attempts remove partial files before retrying. Downloaded source/PDF directories also include the version, for example `2304.09319v1/`. PDF-only downloads also create a relative symlink next to the versioned directory, such as `2304.09319v1.pdf -> 2304.09319v1/2304.09319v1.pdf`.
 
 Use `--skip_download_if_exists` to reuse an existing local source directory instead of downloading it again:
 
