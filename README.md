@@ -26,7 +26,9 @@ To use the arXiv LaTeX Merger, simply run the command `arxiv-latex-merger` follo
 arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 [...]
 ```
 
-This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files as `2304.09319.tex` and `1812.09740.tex`.
+This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files with the downloaded arXiv version in the filename, such as `2304.09319v1.tex` and `1812.09740v2.tex`.
+
+When a code is passed without an explicit version, the tool looks up the latest arXiv version first. If the latest source archive cannot be downloaded, it falls back through older source versions in descending order, for example `v3`, `v2`, `v1`. If no source version is available, it downloads the latest PDF and then falls back through older PDF versions in the same order. Downloaded source/PDF directories also include the version, for example `2304.09319v1/`.
 
 Use `--skip_download_if_exists` to reuse an existing local source directory instead of downloading it again:
 
@@ -34,7 +36,7 @@ Use `--skip_download_if_exists` to reuse an existing local source directory inst
 arxiv-latex-merger --arxiv_codes 2304.09319 --skip_download_if_exists
 ```
 
-If the local directory does not exist, the tool falls back to downloading the arXiv source as usual.
+If a local versioned directory such as `2304.09319v1/` exists, the tool reuses it. If no matching versioned directory exists, it falls back to downloading from arXiv as usual.
 
 Use `--no_bib` to preserve the original `\bibliographystyle{...}` and `\bibliography{...}` commands instead of inlining the generated `.bbl` bibliography:
 

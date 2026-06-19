@@ -1,6 +1,8 @@
 import os
 import random
+import re
 import tarfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from tqdm import tqdm
 import requests
@@ -10,8 +12,65 @@ class SourceDownloadError(RuntimeError):
     pass
 
 
+_ARXIV_API_URL = "https://export.arxiv.org/api/query"
+_ARXIV_VERSION_PATTERN = re.compile(r"^(?P<base>.+?)v(?P<version>\d+)$")
+_ATOM_NAMESPACE = {"atom": "http://www.w3.org/2005/Atom"}
+
+
+def split_arxiv_code_version(arxiv_code):
+    match = _ARXIV_VERSION_PATTERN.match(arxiv_code)
+    if not match:
+        return arxiv_code, None
+
+    return match.group("base"), int(match.group("version"))
+
+
+def versioned_arxiv_code(arxiv_code, version):
+    return f"{arxiv_code}v{version}"
+
+
 def _source_url_for_arxiv_code(arxiv_code):
     return f"https://arxiv.org/src/{arxiv_code}"
+
+
+def _pdf_url_for_arxiv_code(arxiv_code):
+    return f"https://arxiv.org/pdf/{arxiv_code}"
+
+
+def _latest_version_for_arxiv_code(arxiv_code):
+    base_arxiv_code, requested_version = split_arxiv_code_version(arxiv_code)
+    if requested_version is not None:
+        return requested_version
+
+    try:
+        response = requests.get(_ARXIV_API_URL, params={"id_list": base_arxiv_code})
+        response.raise_for_status()
+        feed = ET.fromstring(response.text)
+    except Exception as error:
+        raise SourceDownloadError(
+            f"Could not determine latest version for {arxiv_code}: {error}"
+        ) from error
+
+    entry = feed.find("atom:entry", _ATOM_NAMESPACE)
+    if entry is None:
+        raise SourceDownloadError(f"Could not determine latest version for {arxiv_code}: no arXiv API entry found.")
+
+    entry_id = entry.findtext("atom:id", default="", namespaces=_ATOM_NAMESPACE).rstrip("/").split("/")[-1]
+    _, latest_version = split_arxiv_code_version(entry_id)
+    if latest_version is None:
+        latest_version = 1
+
+    return latest_version
+
+
+def _version_candidates_for_arxiv_code(arxiv_code):
+    base_arxiv_code, requested_version = split_arxiv_code_version(arxiv_code)
+    latest_version = requested_version or _latest_version_for_arxiv_code(base_arxiv_code)
+
+    return [
+        versioned_arxiv_code(base_arxiv_code, version)
+        for version in range(latest_version, 0, -1)
+    ]
 
 
 def _download_file_with_progress(url, path, desc):
@@ -59,7 +118,7 @@ def _remove_output_dir_if_empty(output_dir):
     return True
 
 
-def download_arxiv_source_files(arxiv_code):
+def _download_arxiv_source_version(arxiv_code):
     output_dir = arxiv_code
     removed_empty_output_dir = False
 
@@ -76,9 +135,9 @@ def download_arxiv_source_files(arxiv_code):
         )
 
         if _is_pdf_file(tar_file):
-            pdf_path = _move_downloaded_pdf(tar_file, output_dir, arxiv_code)
+            os.remove(tar_file)
             raise SourceDownloadError(
-                f"arXiv returned a PDF instead of source files. Saved PDF to {pdf_path}."
+                f"arXiv returned a PDF instead of source files for {arxiv_code}."
             )
 
         try:
@@ -113,6 +172,74 @@ def download_arxiv_source_files(arxiv_code):
         raise SourceDownloadError(f"Downloaded source for {arxiv_code} contained no files.")
 
     print(f"Successfully downloaded and extracted source files to {output_dir} directory")
+    return arxiv_code
+
+
+def _download_arxiv_pdf_version(arxiv_code):
+    output_dir = arxiv_code
+    removed_empty_output_dir = False
+    temporary_pdf_path = None
+
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        temporary_pdf_path = os.path.join(output_dir, f"{arxiv_code}.pdf.download")
+        print(f"Downloading PDF for {arxiv_code}...", flush=True)
+        _download_file_with_progress(
+            _pdf_url_for_arxiv_code(arxiv_code),
+            temporary_pdf_path,
+            desc=f"Downloading PDF for {arxiv_code}",
+        )
+
+        if not _is_pdf_file(temporary_pdf_path):
+            os.remove(temporary_pdf_path)
+            raise SourceDownloadError(f"Downloaded PDF for {arxiv_code} was not a PDF file.")
+
+        pdf_path = _move_downloaded_pdf(temporary_pdf_path, output_dir, arxiv_code)
+    except SourceDownloadError:
+        raise
+    except Exception as error:
+        if temporary_pdf_path and os.path.exists(temporary_pdf_path):
+            os.remove(temporary_pdf_path)
+        raise SourceDownloadError(f"Could not download PDF for {arxiv_code}: {error}") from error
+    finally:
+        removed_empty_output_dir = _remove_output_dir_if_empty(output_dir)
+
+    if removed_empty_output_dir:
+        raise SourceDownloadError(f"Downloaded PDF for {arxiv_code} contained no files.")
+
+    print(f"Successfully downloaded PDF to {pdf_path}")
+    return arxiv_code
+
+
+def _format_attempt_errors(attempt_errors):
+    return '; '.join(f"{code}: {error}" for code, error in attempt_errors)
+
+
+def download_arxiv_source_files(arxiv_code):
+    arxiv_code_candidates = _version_candidates_for_arxiv_code(arxiv_code)
+    source_errors = []
+
+    for candidate_code in arxiv_code_candidates:
+        try:
+            return _download_arxiv_source_version(candidate_code)
+        except SourceDownloadError as error:
+            source_errors.append((candidate_code, error))
+            print(f"Source download failed for {candidate_code}: {error}")
+
+    pdf_errors = []
+    for candidate_code in arxiv_code_candidates:
+        try:
+            return _download_arxiv_pdf_version(candidate_code)
+        except SourceDownloadError as error:
+            pdf_errors.append((candidate_code, error))
+            print(f"PDF download failed for {candidate_code}: {error}")
+
+    raise SourceDownloadError(
+        f"Could not download source or PDF for {arxiv_code}. "
+        f"Source attempts: {_format_attempt_errors(source_errors)}. "
+        f"PDF attempts: {_format_attempt_errors(pdf_errors)}."
+    )
 
 
 def download_random_arxiv_papers(n=1):
