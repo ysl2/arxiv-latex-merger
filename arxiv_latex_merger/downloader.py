@@ -109,6 +109,21 @@ def _move_downloaded_pdf(downloaded_path, output_dir, arxiv_code):
     return pdf_path
 
 
+def _create_relative_pdf_symlink(pdf_path, output_dir):
+    pdf_path = Path(pdf_path)
+    link_path = Path(output_dir).parent / pdf_path.name
+    relative_target = os.path.relpath(pdf_path, start=link_path.parent)
+
+    if link_path.is_symlink():
+        link_path.unlink()
+    elif link_path.exists():
+        print(f"PDF symlink path {link_path} already exists; leaving it unchanged.")
+        return None
+
+    os.symlink(relative_target, link_path)
+    return link_path
+
+
 def _remove_output_dir_if_empty(output_dir):
     try:
         Path(output_dir).rmdir()
@@ -196,6 +211,7 @@ def _download_arxiv_pdf_version(arxiv_code):
             raise SourceDownloadError(f"Downloaded PDF for {arxiv_code} was not a PDF file.")
 
         pdf_path = _move_downloaded_pdf(temporary_pdf_path, output_dir, arxiv_code)
+        symlink_path = _create_relative_pdf_symlink(pdf_path, output_dir)
     except SourceDownloadError:
         raise
     except Exception as error:
@@ -208,6 +224,8 @@ def _download_arxiv_pdf_version(arxiv_code):
     if removed_empty_output_dir:
         raise SourceDownloadError(f"Downloaded PDF for {arxiv_code} contained no files.")
 
+    if symlink_path:
+        print(f"Created relative PDF symlink at {symlink_path}")
     print(f"Successfully downloaded PDF to {pdf_path}")
     return arxiv_code
 

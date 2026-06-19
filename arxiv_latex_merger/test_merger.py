@@ -1521,7 +1521,11 @@ class DownloaderTests(unittest.TestCase):
 
             output_dir = Path(temp_dir) / "1234.56789v1"
             pdf_path = output_dir / "1234.56789v1.pdf"
+            symlink_path = Path(temp_dir) / "1234.56789v1.pdf"
             self.assertEqual(pdf_path.read_bytes(), pdf_payload)
+            self.assertTrue(symlink_path.is_symlink())
+            self.assertEqual(os.readlink(symlink_path), "1234.56789v1/1234.56789v1.pdf")
+            self.assertTrue(symlink_path.samefile(pdf_path))
             self.assertFalse((output_dir / "1234.56789v1.tar.gz").exists())
 
         self.assertEqual(downloaded_code, "1234.56789v1")
