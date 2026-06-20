@@ -127,6 +127,14 @@ def _older_version_candidates(arxiv_code):
     ]
 
 
+def _version_fallback_candidates(arxiv_code):
+    base_arxiv_code, version = split_arxiv_code_version(arxiv_code)
+    if version is None:
+        return [versioned_arxiv_code(base_arxiv_code, 1)]
+
+    return _older_version_candidates(arxiv_code)
+
+
 def _attempt_code(candidate_code, error):
     return error.actual_code or candidate_code
 
@@ -412,15 +420,29 @@ def download_arxiv_source_files(arxiv_code):
 
             if requested_version is None and latest_known_code is None and error.actual_code:
                 latest_known_code = error.actual_code
-                source_candidates.extend(_older_version_candidates(latest_known_code))
+                source_candidates.extend(_version_fallback_candidates(latest_known_code))
+
+    if requested_version is None and latest_known_code is None:
+        source_candidates.extend(_version_fallback_candidates(arxiv_code))
+        while source_candidates:
+            candidate_code = source_candidates.pop(0)
+            if candidate_code in tried_source_candidates:
+                continue
+            tried_source_candidates.add(candidate_code)
+            try:
+                return _download_arxiv_source_version(candidate_code)
+            except SourceDownloadError as error:
+                attempted_code = _attempt_code(candidate_code, error)
+                source_errors.append((attempted_code, error))
+                print(f"Source download failed for {attempted_code}: {error}")
 
     pdf_errors = []
     if requested_version is not None:
         pdf_candidates = [arxiv_code]
     elif latest_known_code:
-        pdf_candidates = [latest_known_code] + _older_version_candidates(latest_known_code)
+        pdf_candidates = [latest_known_code] + _version_fallback_candidates(latest_known_code)
     else:
-        pdf_candidates = [arxiv_code]
+        pdf_candidates = [arxiv_code] + _version_fallback_candidates(arxiv_code)
 
     tried_pdf_candidates = set()
     while pdf_candidates:

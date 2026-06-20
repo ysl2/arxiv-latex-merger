@@ -1718,6 +1718,46 @@ class DownloaderTests(unittest.TestCase):
             + ["https://arxiv.org/src/1234.56789v1"],
         )
 
+    def test_download_arxiv_source_files_falls_back_to_v1_when_unversioned_has_no_version_hint(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"\\documentclass{article}\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_payload = payload.getvalue()
+
+        class MissingResponse:
+            headers = {}
+
+            def raise_for_status(self):
+                raise RuntimeError("not found")
+
+        def fake_get(url, **kwargs):
+            if url == "https://arxiv.org/src/1234.56789v1":
+                return self._download_response(tar_payload, filename="arXiv-1234.56789v1.tar.gz")
+            return MissingResponse()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get", side_effect=fake_get) as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            output_dir = Path(temp_dir) / "1234.56789v1"
+            self.assertTrue((output_dir / "main.tex").exists())
+
+        self.assertEqual(downloaded_code, "1234.56789v1")
+        self.assertEqual(
+            [call.args[0] for call in get_mock.call_args_list],
+            ["https://arxiv.org/src/1234.56789"] * 3
+            + ["https://arxiv.org/src/1234.56789v1"],
+        )
+
     def test_download_arxiv_source_files_retries_partial_source_downloads_with_clean_dirs(self):
         payload = io.BytesIO()
         with tarfile.open(fileobj=payload, mode="w:gz") as tar:
@@ -1852,7 +1892,9 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in get_mock.call_args_list],
             ["https://arxiv.org/src/1234.56789"] * 3
-            + ["https://arxiv.org/pdf/1234.56789"] * 3,
+            + ["https://arxiv.org/src/1234.56789v1"] * 3
+            + ["https://arxiv.org/pdf/1234.56789"] * 3
+            + ["https://arxiv.org/pdf/1234.56789v1"] * 3,
         )
 
     def test_download_random_arxiv_papers_downloads_generated_ids_from_source_only(self):
