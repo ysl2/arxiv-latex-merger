@@ -1370,6 +1370,132 @@ class CliTests(unittest.TestCase):
         self.assertEqual(find_mock.call_count, 2)
         self.assertEqual(merge_mock.call_count, 2)
 
+    def test_keeps_only_selected_local_version_when_skipping_download(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            old_dir = root / "1234.56789v1"
+            old_dir.mkdir()
+            (old_dir / "main.tex").write_text("old", encoding="utf-8")
+            (root / "1234.56789v1.tex").write_text("old merged", encoding="utf-8")
+            (root / "1234.56789v1_clean.tex").write_text("old clean", encoding="utf-8")
+            (root / "1234.56789").mkdir()
+            (root / "1234.56789.tex").write_text("old unversioned merged", encoding="utf-8")
+            (root / "9999.99999v1").mkdir()
+            (old_dir / "1234.56789v1.pdf").write_bytes(b"%PDF-1.7\n")
+            os.symlink("1234.56789v1/1234.56789v1.pdf", root / "1234.56789v1.pdf")
+            (root / "1234.56789v2").mkdir()
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789v2/main.tex") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("new merged", "utf-8")):
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1234.56789v1").exists())
+            self.assertFalse((root / "1234.56789v1.tex").exists())
+            self.assertFalse((root / "1234.56789v1_clean.tex").exists())
+            self.assertFalse((root / "1234.56789v1.pdf").exists())
+            self.assertFalse((root / "1234.56789").exists())
+            self.assertFalse((root / "1234.56789.tex").exists())
+            self.assertTrue((root / "9999.99999v1").is_dir())
+            self.assertTrue((root / "1234.56789v2").is_dir())
+            self.assertEqual((root / "1234.56789v2.tex").read_text(), "new merged")
+
+        download_mock.assert_not_called()
+        find_mock.assert_called_once_with("1234.56789v2")
+
+    def test_downloaded_source_version_removes_older_local_versions(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1234.56789v1").mkdir()
+            (root / "1234.56789v1.tex").write_text("old merged", encoding="utf-8")
+            (root / "1234.56789v1_clean.tex").write_text("old clean", encoding="utf-8")
+            (root / "1234.56789v2").mkdir()
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", return_value="1234.56789v2") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789v2/main.tex"):
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("new merged", "utf-8")):
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1234.56789v1").exists())
+            self.assertFalse((root / "1234.56789v1.tex").exists())
+            self.assertFalse((root / "1234.56789v1_clean.tex").exists())
+            self.assertTrue((root / "1234.56789v2").is_dir())
+            self.assertEqual((root / "1234.56789v2.tex").read_text(), "new merged")
+
+        download_mock.assert_called_once_with("1234.56789")
+
+    def test_downloaded_pdf_version_removes_older_local_versions(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            remove_src=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1234.56789v1").mkdir()
+            (root / "1234.56789v1.tex").write_text("old merged", encoding="utf-8")
+            pdf_dir = root / "1234.56789v2"
+            pdf_dir.mkdir()
+            (pdf_dir / "1234.56789v2.pdf").write_bytes(b"%PDF-1.7\n")
+            os.symlink("1234.56789v2/1234.56789v2.pdf", root / "1234.56789v2.pdf")
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", return_value="1234.56789v2") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file") as find_mock:
+                        with patch("arxiv_latex_merger.cli.merge_tex_files") as merge_mock:
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertFalse((root / "1234.56789v1").exists())
+            self.assertFalse((root / "1234.56789v1.tex").exists())
+            self.assertTrue((root / "1234.56789v2").is_dir())
+            self.assertTrue((root / "1234.56789v2.pdf").is_symlink())
+
+        download_mock.assert_called_once_with("1234.56789")
+        find_mock.assert_not_called()
+        merge_mock.assert_not_called()
+
     def test_source_download_error_skips_code_and_continues(self):
         args = SimpleNamespace(
             arxiv_codes=["1111.11111", "2222.22222"],

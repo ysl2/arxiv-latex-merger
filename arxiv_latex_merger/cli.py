@@ -4,6 +4,7 @@ __version__='0.2.0'
 __author__='iokarkan'
 
 import argparse
+import shutil
 from pathlib import Path
 from .merger import merge_tex_files, find_main_tex_file
 from .downloader import (
@@ -30,6 +31,7 @@ def main(args):
             local_pdf_path = _find_local_pdf_only_file(actual_code) if getattr(args, 'skip_download_if_exists', False) else None
             if local_pdf_path:
                 print(f"Local PDF-only source exists for {actual_code} at {local_pdf_path}; skipping download and merge.")
+                _remove_other_versions(actual_code)
                 continue
 
             local_main_tex_path = _find_local_main_tex_file(actual_code) if getattr(args, 'skip_download_if_exists', False) else None
@@ -47,8 +49,10 @@ def main(args):
 
             if _find_local_pdf_only_file(actual_code):
                 print(f"PDF-only source downloaded for {actual_code}; skipping merge.")
+                _remove_other_versions(actual_code)
                 continue
 
+            _remove_other_versions(actual_code)
             available_arxiv_codes.append(actual_code)
         args.arxiv_codes = available_arxiv_codes
     else:
@@ -143,6 +147,38 @@ def _find_local_pdf_only_file(code):
         return None
 
     return str(pdf_paths[0])
+
+
+def _remove_other_versions(code):
+    base_code, kept_version = split_arxiv_code_version(code)
+    if kept_version is None:
+        return
+
+    for path in Path('.').iterdir():
+        candidate_code = _candidate_arxiv_artifact_code(path)
+        if not candidate_code or candidate_code == code:
+            continue
+
+        candidate_base_code, candidate_version = split_arxiv_code_version(candidate_code)
+        if candidate_base_code != base_code:
+            continue
+
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        version_label = f"v{candidate_version}" if candidate_version is not None else "unversioned"
+        print(f"Removed old local {version_label} artifact {path}.")
+
+
+def _candidate_arxiv_artifact_code(path):
+    name = path.name
+    for suffix in ('.tar.gz', '_clean.tex', '.tex', '.pdf'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+
+    return name
 
 
 def cli():
