@@ -882,7 +882,7 @@ def remove_latex_comments(file_lines):
     in_comment_environment = False
     literal_environment = None
 
-    for line in file_lines:
+    for line in _iter_physical_lines(file_lines):
         if in_comment_environment:
             if _first_active_environment_match(line, 'end', {'comment'}):
                 in_comment_environment = False
@@ -914,6 +914,11 @@ def remove_latex_comments(file_lines):
             output_lines.append(stripped_line)
 
     return output_lines
+
+
+def _iter_physical_lines(file_lines):
+    for line in file_lines:
+        yield from line.splitlines(keepends=True)
 
 
 def _active_bibliography_commands(file_lines):

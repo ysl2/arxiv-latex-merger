@@ -1176,6 +1176,45 @@ class MergerRemoveCommentsTests(unittest.TestCase):
         self.assertNotIn("hidden note", merged)
         self.assertIn("\\%", merged)
 
+    def test_remove_comments_keeps_text_after_comment_inside_inlined_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{abstract}\n"
+                "\\input{method}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "abstract.tex").write_text(
+                "\\begin{abstract}\n"
+                "Visible abstract before note.\n"
+                "% draft note\n"
+                "Visible abstract after note.\n"
+                "\\end{abstract}\n",
+                encoding="utf-8",
+            )
+            (root / "method.tex").write_text(
+                "\\section{Method}\n"
+                "Method body.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(
+                str(root / "main.tex"),
+                merge_bib=False,
+                remove_comments=True,
+            )
+
+        self.assertIn("\\begin{abstract}", merged)
+        self.assertIn("Visible abstract before note.", merged)
+        self.assertIn("Visible abstract after note.", merged)
+        self.assertIn("\\end{abstract}", merged)
+        self.assertIn("\\section{Method}", merged)
+        self.assertIn("Method body.", merged)
+        self.assertNotIn("draft note", merged)
+
     def test_remove_comments_preserves_syntax_sensitive_line_end_percent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
