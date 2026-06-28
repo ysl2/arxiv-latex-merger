@@ -161,6 +161,127 @@ class MergerInputCommentTests(unittest.TestCase):
         self.assertIn("After subsection.", merged)
         self.assertNotIn("\\input{subsection}", merged)
 
+    def test_include_commands_are_processed_recursively(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\include{sections/method}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "method.tex").write_text(
+                "\\section{Method}\n"
+                "\\include{sections/details}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "details.tex").write_text(
+                "Method details.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\section{Method}", merged)
+        self.assertIn("Method details.", merged)
+        self.assertNotIn("\\include{sections/method}", merged)
+        self.assertNotIn("\\include{sections/details}", merged)
+
+    def test_subfile_commands_are_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\subfile{sections/experiment}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "experiment.tex").write_text(
+                "\\section{Experiment}\n"
+                "Experiment details.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\section{Experiment}", merged)
+        self.assertIn("Experiment details.", merged)
+        self.assertNotIn("\\subfile{sections/experiment}", merged)
+
+    def test_import_commands_are_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "paper").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\import{paper/}{abstract}\n"
+                "\\subimport{paper/}{body}\n"
+                "\\includefrom{paper/}{results}\n"
+                "\\subincludefrom{paper/}{conclusion}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "paper" / "abstract.tex").write_text(
+                "\\begin{abstract}\nAbstract text.\n\\end{abstract}\n",
+                encoding="utf-8",
+            )
+            (root / "paper" / "body.tex").write_text(
+                "\\section{Body}\nBody text.\n",
+                encoding="utf-8",
+            )
+            (root / "paper" / "results.tex").write_text(
+                "\\section{Results}\nResults text.\n",
+                encoding="utf-8",
+            )
+            (root / "paper" / "conclusion.tex").write_text(
+                "\\section{Conclusion}\nConclusion text.\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("\\begin{abstract}", merged)
+        self.assertIn("Abstract text.", merged)
+        self.assertIn("\\section{Body}", merged)
+        self.assertIn("\\section{Results}", merged)
+        self.assertIn("\\section{Conclusion}", merged)
+        self.assertNotIn("\\import{paper/}{abstract}", merged)
+        self.assertNotIn("\\subimport{paper/}{body}", merged)
+        self.assertNotIn("\\includefrom{paper/}{results}", merged)
+        self.assertNotIn("\\subincludefrom{paper/}{conclusion}", merged)
+
+    def test_new_include_commands_inside_comments_and_iffalse_are_not_processed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "% \\include{missing}\n"
+                "\\iffalse\n"
+                "\\subfile{also_missing}\n"
+                "\\fi\n"
+                "\\begin{comment}\n"
+                "\\import{missing/}{file}\n"
+                "\\end{comment}\n"
+                "\\include{visible}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "visible.tex").write_text("Visible body.\n", encoding="utf-8")
+
+            merged, _ = merge_tex_files(str(root / "main.tex"), merge_bib=False)
+
+        self.assertIn("% \\include{missing}", merged)
+        self.assertIn("\\subfile{also_missing}", merged)
+        self.assertIn("\\import{missing/}{file}", merged)
+        self.assertIn("Visible body.", merged)
+        self.assertNotIn("\\include{visible}", merged)
+
     def test_input_with_explicit_non_tex_extension_is_processed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

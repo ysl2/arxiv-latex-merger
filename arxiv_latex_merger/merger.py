@@ -189,6 +189,13 @@ def _input_path_candidates(file_path):
         yield f"{file_path}.tex"
 
 
+_INCLUDE_COMMAND_PATTERN = re.compile(
+    r'\\(?P<command>input|include|subfile)(?![A-Za-z@])\s*\{(?P<path>.+?)\}'
+    r'|\\(?P<import_command>import|subimport|includefrom|subincludefrom)(?![A-Za-z@])'
+    r'\s*\{(?P<import_dir>.+?)\}\s*\{(?P<import_path>.+?)\}'
+)
+
+
 _PRESERVED_SYSTEM_INPUT_NAMES = {
     'epsf',
     'glyphtounicode',
@@ -355,7 +362,7 @@ def _input_base_path_candidates(input_relative_path, file_dir, root_dir, source_
     ]))
 
 
-def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir):
+def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir, command_name='input'):
     input_file_path = _find_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
     if input_file_path:
         return input_file_path
@@ -367,7 +374,7 @@ def _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_roo
     expected_paths = ', '.join(candidate_paths)
     root_display = root_dir or '.'
     raise FileNotFoundError(
-        f"Could not resolve \\input{{{input_relative_path}}} from {file_dir}. "
+        f"Could not resolve \\{command_name}{{{input_relative_path}}} from {file_dir}. "
         f"Expected {expected_paths} relative to {root_display}."
     )
 
@@ -424,7 +431,7 @@ def _parse_if_file_exists_command(line, command_end):
     return file_name, true_branch, false_branch, command_end
 
 
-def _process_if_file_exists_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
+def _process_if_file_exists_commands_in_line(line, include_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
     if_file_exists_matches = list(_active_pattern_matches(_IF_FILE_EXISTS_PATTERN, line))
     if not if_file_exists_matches:
         return line
@@ -455,7 +462,7 @@ def _process_if_file_exists_commands_in_line(line, input_pattern, file_dir, root
         line_parts.append(
             _process_input_commands_in_line(
                 selected_branch,
-                input_pattern,
+                include_pattern,
                 file_dir,
                 root_dir,
                 source_root_dir,
@@ -508,7 +515,7 @@ def _text_to_lines(text):
 def _process_multiline_if_file_exists_command(
     file_lines,
     line_index,
-    input_pattern,
+    include_pattern,
     file_dir,
     root_dir,
     source_root_dir,
@@ -542,7 +549,7 @@ def _process_multiline_if_file_exists_command(
         output_lines.append(
             _process_input_commands_in_line(
                 prefix,
-                input_pattern,
+                include_pattern,
                 file_dir,
                 root_dir,
                 source_root_dir,
@@ -574,16 +581,37 @@ def _process_multiline_if_file_exists_command(
     return output_lines, end_index
 
 
-def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
+def _include_match_command_name(match):
+    return match.group('command') or match.group('import_command')
+
+
+def _include_match_relative_path(match, input_path_macros):
+    command_name = _include_match_command_name(match)
+
+    if command_name in {'import', 'subimport', 'includefrom', 'subincludefrom'}:
+        import_dir = _normalize_input_relative_path(
+            match.group('import_dir').strip(),
+            input_path_macros,
+        )
+        import_path = _normalize_input_relative_path(
+            match.group('import_path').strip(),
+            input_path_macros,
+        )
+        return os.path.join(import_dir, import_path)
+
+    return _normalize_input_relative_path(match.group('path').strip(), input_path_macros)
+
+
+def _process_input_commands_in_line(line, include_pattern, file_dir, root_dir, source_root_dir, input_path_macros):
     line = _process_if_file_exists_commands_in_line(
         line,
-        input_pattern,
+        include_pattern,
         file_dir,
         root_dir,
         source_root_dir,
         input_path_macros,
     )
-    input_matches = list(_active_pattern_matches(input_pattern, line))
+    input_matches = list(_active_pattern_matches(include_pattern, line))
 
     if not input_matches:
         _record_input_path_macros(line, input_path_macros)
@@ -597,8 +625,15 @@ def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, sou
         line_parts.append(prefix)
         _record_input_path_macros(prefix, input_path_macros)
 
-        input_relative_path = _normalize_input_relative_path(match.group(1).strip(), input_path_macros)
-        input_file_path = _resolve_input_file_path(input_relative_path, file_dir, root_dir, source_root_dir)
+        command_name = _include_match_command_name(match)
+        input_relative_path = _include_match_relative_path(match, input_path_macros)
+        input_file_path = _resolve_input_file_path(
+            input_relative_path,
+            file_dir,
+            root_dir,
+            source_root_dir,
+            command_name=command_name,
+        )
         if input_file_path is None:
             line_parts.append(match.group(0))
             previous_end = match.end()
@@ -625,7 +660,7 @@ def _process_input_commands_in_line(line, input_pattern, file_dir, root_dir, sou
 
 def _process_input_commands_with_conditionals(
     line,
-    input_pattern,
+    include_pattern,
     file_dir,
     root_dir,
     source_root_dir,
@@ -640,7 +675,7 @@ def _process_input_commands_with_conditionals(
             output_parts.append(
                 _process_input_commands_in_line(
                     segment,
-                    input_pattern,
+                    include_pattern,
                     file_dir,
                     root_dir,
                     source_root_dir,
@@ -661,7 +696,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
     if input_path_macros is None:
         input_path_macros = {}
 
-    input_pattern = re.compile(r'\\input\{(.+?)\}')
+    include_pattern = _INCLUDE_COMMAND_PATTERN
     output_lines = []
     in_comment_environment = False
     literal_environment = None
@@ -674,7 +709,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
         if false_conditional_depth:
             processed_line, false_conditional_depth = _process_input_commands_with_conditionals(
                 line,
-                input_pattern,
+                include_pattern,
                 file_dir,
                 root_dir,
                 source_root_dir,
@@ -715,7 +750,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             if earliest_environment_begin is None or false_begin.start() < earliest_environment_begin.start():
                 processed_line, false_conditional_depth = _process_input_commands_with_conditionals(
                     line,
-                    input_pattern,
+                    include_pattern,
                     file_dir,
                     root_dir,
                     source_root_dir,
@@ -732,7 +767,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             output_lines.append(
                 _process_input_commands_in_line(
                     prefix,
-                    input_pattern,
+                    include_pattern,
                     file_dir,
                     root_dir,
                     source_root_dir,
@@ -750,7 +785,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
             output_lines.append(
                 _process_input_commands_in_line(
                     prefix,
-                    input_pattern,
+                    include_pattern,
                     file_dir,
                     root_dir,
                     source_root_dir,
@@ -766,7 +801,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
         multiline_if_result = _process_multiline_if_file_exists_command(
             file_lines,
             line_index,
-            input_pattern,
+            include_pattern,
             file_dir,
             root_dir,
             source_root_dir,
@@ -781,7 +816,7 @@ def process_input_commands(file_lines, file_dir, root_dir=None, source_root_dir=
         output_lines.append(
             _process_input_commands_in_line(
                 line,
-                input_pattern,
+                include_pattern,
                 file_dir,
                 root_dir,
                 source_root_dir,
