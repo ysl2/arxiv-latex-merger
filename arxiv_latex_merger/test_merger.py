@@ -1215,6 +1215,79 @@ class MergerRemoveCommentsTests(unittest.TestCase):
         self.assertIn("Method body.", merged)
         self.assertNotIn("draft note", merged)
 
+    def test_remove_comments_keeps_all_recursive_inputs_and_inlines_bibliography(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "sections").mkdir()
+            (root / "main.tex").write_text(
+                "\\documentclass{article}\n"
+                "\\begin{document}\n"
+                "\\input{macros}\n"
+                "\\input{sections/abstract}\n"
+                "\\input{sections/body}\n"
+                "\\bibliographystyle{plain}\n"
+                "\\bibliography{refs}\n"
+                "\\end{document}\n",
+                encoding="utf-8",
+            )
+            (root / "macros.tex").write_text(
+                "% macro draft note\n"
+                "\\newcommand{\\topicmodel}{TopicModelX}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "abstract.tex").write_text(
+                "\\begin{abstract}\n"
+                "Abstract opening uses \\topicmodel.\n"
+                "% discarded abstract alternative\n"
+                "Abstract text after a comment line remains.\n"
+                "\\end{abstract}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "body.tex").write_text(
+                "\\section{Method}\n"
+                "Method body before inline note. % inline note removed\n"
+                "\\input{sections/nested}\n",
+                encoding="utf-8",
+            )
+            (root / "sections" / "nested.tex").write_text(
+                "\\subsection{Nested Results}\n"
+                "Nested input body remains.\n",
+                encoding="utf-8",
+            )
+            (root / "main.bbl").write_text(
+                "\\begin{thebibliography}{1}\n"
+                "\\bibitem{ref} Reference body.\n"
+                "\\end{thebibliography}\n",
+                encoding="utf-8",
+            )
+
+            merged, _ = merge_tex_files(
+                str(root / "main.tex"),
+                merge_bib=True,
+                remove_comments=True,
+            )
+
+        self.assertIn("\\newcommand{\\topicmodel}{TopicModelX}", merged)
+        self.assertIn("\\begin{abstract}", merged)
+        self.assertIn("Abstract opening uses \\topicmodel.", merged)
+        self.assertIn("Abstract text after a comment line remains.", merged)
+        self.assertIn("\\end{abstract}", merged)
+        self.assertIn("\\section{Method}", merged)
+        self.assertIn("Method body before inline note.\n", merged)
+        self.assertIn("\\subsection{Nested Results}", merged)
+        self.assertIn("Nested input body remains.", merged)
+        self.assertIn("\\begin{thebibliography}{1}", merged)
+        self.assertIn("\\bibitem{ref} Reference body.", merged)
+        self.assertNotIn("\\input{macros}", merged)
+        self.assertNotIn("\\input{sections/abstract}", merged)
+        self.assertNotIn("\\input{sections/body}", merged)
+        self.assertNotIn("\\input{sections/nested}", merged)
+        self.assertNotIn("\\bibliographystyle{plain}", merged)
+        self.assertNotIn("\\bibliography{refs}", merged)
+        self.assertNotIn("macro draft note", merged)
+        self.assertNotIn("discarded abstract alternative", merged)
+        self.assertNotIn("inline note removed", merged)
+
     def test_remove_comments_preserves_syntax_sensitive_line_end_percent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
