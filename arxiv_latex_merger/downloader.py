@@ -3,6 +3,7 @@ import random
 import re
 import shutil
 import tarfile
+import threading
 from urllib.parse import unquote
 from pathlib import Path
 from tqdm import tqdm
@@ -22,6 +23,7 @@ _CONTENT_DISPOSITION_FILENAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_ATTEMPTS = 3
+_SOURCE_DOWNLOAD_LOCK = threading.Lock()
 
 
 def split_arxiv_code_version(arxiv_code):
@@ -213,7 +215,11 @@ def _remove_pdf_symlink(output_dir, arxiv_code):
         link_path.unlink()
 
 
-def _clear_download_artifacts(output_dir, arxiv_code):
+def _tar_file_path(arxiv_code):
+    return Path(f"{arxiv_code}.tar.gz")
+
+
+def _clear_output_artifacts(output_dir, arxiv_code):
     _remove_pdf_symlink(output_dir, arxiv_code)
 
     output_path = Path(output_dir)
@@ -221,6 +227,105 @@ def _clear_download_artifacts(output_dir, arxiv_code):
         output_path.unlink()
     elif output_path.is_dir():
         shutil.rmtree(output_path)
+
+
+def _clear_download_artifacts(output_dir, arxiv_code):
+    _clear_output_artifacts(output_dir, arxiv_code)
+
+    tar_file = _tar_file_path(arxiv_code)
+    if tar_file.is_symlink() or tar_file.is_file():
+        tar_file.unlink()
+
+
+def _extract_source_archive(tar_file, output_dir, arxiv_code):
+    try:
+        with tarfile.open(tar_file, "r:gz") as tar:
+            members = tar.getmembers()
+            if not members:
+                raise SourceDownloadError(
+                    f"Downloaded source for {arxiv_code} contained no files.",
+                    actual_code=_known_versioned_code(arxiv_code),
+                )
+
+            # A local archive is the authoritative copy. Remove stale extracted
+            # files before recreating the versioned source directory from it.
+            _clear_output_artifacts(output_dir, arxiv_code)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            with tqdm(
+                total=len(members),
+                unit="file",
+                desc=f"Extracting source files for {arxiv_code}",
+            ) as progress_bar:
+                for member in members:
+                    tar.extract(member, output_dir)
+                    progress_bar.update(1)
+    except tarfile.TarError as error:
+        raise SourceDownloadError(
+            f"Downloaded source for {arxiv_code} was not a gzipped tar archive. "
+            "arXiv may only provide a PDF for this paper.",
+            actual_code=_known_versioned_code(arxiv_code),
+        ) from error
+
+
+def _local_artifact_code(arxiv_code):
+    base_arxiv_code, requested_version = split_arxiv_code_version(arxiv_code)
+    if requested_version is not None:
+        if _tar_file_path(arxiv_code).is_file() or Path(arxiv_code).is_dir():
+            return arxiv_code
+        return None
+
+    base_path = Path(base_arxiv_code)
+    parent = base_path.parent
+    if not parent.is_dir():
+        return None
+
+    versioned_codes = set()
+    for path in parent.iterdir():
+        if path.is_dir():
+            artifact_name = path.name
+        elif path.is_file() and path.name.endswith(".tar.gz"):
+            artifact_name = path.name[:-len(".tar.gz")]
+        else:
+            continue
+
+        candidate_code = str(parent / artifact_name)
+        candidate_base, candidate_version = split_arxiv_code_version(candidate_code)
+        if Path(candidate_base) == base_path and candidate_version is not None:
+            versioned_codes.add(candidate_code)
+
+    if versioned_codes:
+        return max(versioned_codes, key=lambda code: split_arxiv_code_version(code)[1])
+
+    if _tar_file_path(arxiv_code).is_file() or Path(arxiv_code).is_dir():
+        return arxiv_code
+
+    return None
+
+
+def _reuse_local_source_artifact(arxiv_code, delete_tar_after_download):
+    local_code = _local_artifact_code(arxiv_code)
+    if not local_code:
+        return None
+
+    tar_file = _tar_file_path(local_code)
+    if tar_file.is_file():
+        print(f"Local source archive exists for {local_code}; extracting without downloading.")
+        try:
+            _extract_source_archive(tar_file, local_code, local_code)
+        except Exception:
+            # Keep the archive so the user can inspect or replace it, but never
+            # leave a partially replaced source directory behind.
+            _clear_output_artifacts(local_code, local_code)
+            raise
+
+        if delete_tar_after_download:
+            tar_file.unlink()
+        print(f"Successfully extracted local source archive to {local_code} directory")
+    else:
+        print(f"Local source directory exists for {local_code}; skipping download.")
+
+    return local_code
 
 
 def _format_attempt_errors(attempt_errors):
@@ -262,71 +367,53 @@ def _run_download_attempts(arxiv_code, media_name, download_once):
     )
 
 
-def _download_arxiv_source_version_once(arxiv_code):
+def _download_arxiv_source_version_once(arxiv_code, delete_tar_after_download=False):
     actual_code = arxiv_code
 
     try:
-        response = _request_download(_source_url_for_arxiv_code(arxiv_code))
-        actual_code = _actual_arxiv_code_from_response(response, arxiv_code)
-        if _response_is_pdf(response):
-            close_response = getattr(response, "close", None)
-            if close_response:
-                close_response()
-            raise SourceDownloadError(
-                f"arXiv returned a PDF instead of source files for {actual_code}.",
-                actual_code=_known_versioned_code(actual_code),
-                retryable=False,
+        # arXiv source downloads are deliberately serialized to avoid upstream
+        # rate limiting. Extraction and all later processing happen after the
+        # lock is released, so separate paper pipelines can still run in parallel.
+        with _SOURCE_DOWNLOAD_LOCK:
+            response = _request_download(_source_url_for_arxiv_code(arxiv_code))
+            actual_code = _actual_arxiv_code_from_response(response, arxiv_code)
+            if _response_is_pdf(response):
+                close_response = getattr(response, "close", None)
+                if close_response:
+                    close_response()
+                raise SourceDownloadError(
+                    f"arXiv returned a PDF instead of source files for {actual_code}.",
+                    actual_code=_known_versioned_code(actual_code),
+                    retryable=False,
+                )
+
+            output_dir = actual_code
+
+            # Keep the archive beside the extracted directory so deleting the
+            # extracted folder does not also remove the downloaded archive.
+            tar_file = _tar_file_path(actual_code)
+            tar_file.parent.mkdir(parents=True, exist_ok=True)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            print(f"Downloading source files for {actual_code}...", flush=True)
+            _download_response_with_progress(
+                response,
+                tar_file,
+                desc=f"Downloading source for {actual_code}",
+                url=_source_url_for_arxiv_code(arxiv_code),
             )
-
-        output_dir = actual_code
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # Download the source files.
-        tar_file = os.path.join(output_dir, f"{actual_code}.tar.gz")
-        print(f"Downloading source files for {actual_code}...", flush=True)
-        _download_response_with_progress(
-            response,
-            tar_file,
-            desc=f"Downloading source for {actual_code}",
-            url=_source_url_for_arxiv_code(arxiv_code),
-        )
 
         if _is_pdf_file(tar_file):
-            os.remove(tar_file)
+            tar_file.unlink()
             raise SourceDownloadError(
                 f"arXiv returned a PDF instead of source files for {actual_code}.",
                 actual_code=_known_versioned_code(actual_code),
                 retryable=False,
             )
 
-        try:
-            with tarfile.open(tar_file, "r:gz") as tar:
-                members = tar.getmembers()
-                if not members:
-                    raise SourceDownloadError(
-                        f"Downloaded source for {actual_code} contained no files.",
-                        actual_code=_known_versioned_code(actual_code),
-                    )
+        _extract_source_archive(tar_file, output_dir, actual_code)
 
-                with tqdm(
-                    total=len(members),
-                    unit="file",
-                    desc=f"Extracting source files for {actual_code}",
-                ) as progress_bar:
-                    for member in members:
-                        tar.extract(member, output_dir)
-                        progress_bar.update(1)
-        except tarfile.TarError as error:
-            if os.path.exists(tar_file):
-                os.remove(tar_file)
-            raise SourceDownloadError(
-                f"Downloaded source for {actual_code} was not a gzipped tar archive. "
-                "arXiv may only provide a PDF for this paper.",
-                actual_code=_known_versioned_code(actual_code),
-            ) from error
-
-        # Remove the tar file
-        os.remove(tar_file)
+        if delete_tar_after_download:
+            tar_file.unlink()
     except SourceDownloadError:
         raise
     except Exception as error:
@@ -338,11 +425,14 @@ def _download_arxiv_source_version_once(arxiv_code):
     return actual_code
 
 
-def _download_arxiv_source_version(arxiv_code):
+def _download_arxiv_source_version(arxiv_code, delete_tar_after_download=False):
     return _run_download_attempts(
         arxiv_code,
         "Source",
-        lambda: _download_arxiv_source_version_once(arxiv_code),
+        lambda: _download_arxiv_source_version_once(
+            arxiv_code,
+            delete_tar_after_download=delete_tar_after_download,
+        ),
     )
 
 
@@ -399,7 +489,19 @@ def _download_arxiv_pdf_version(arxiv_code):
     )
 
 
-def download_arxiv_source_files(arxiv_code):
+def download_arxiv_source_files(
+    arxiv_code,
+    delete_tar_after_download=False,
+    skip_download_if_exists=True,
+):
+    if skip_download_if_exists:
+        local_code = _reuse_local_source_artifact(
+            arxiv_code,
+            delete_tar_after_download=delete_tar_after_download,
+        )
+        if local_code:
+            return local_code
+
     _, requested_version = split_arxiv_code_version(arxiv_code)
     source_errors = []
     source_candidates = [arxiv_code]
@@ -412,7 +514,10 @@ def download_arxiv_source_files(arxiv_code):
             continue
         tried_source_candidates.add(candidate_code)
         try:
-            return _download_arxiv_source_version(candidate_code)
+            return _download_arxiv_source_version(
+                candidate_code,
+                delete_tar_after_download=delete_tar_after_download,
+            )
         except SourceDownloadError as error:
             attempted_code = _attempt_code(candidate_code, error)
             source_errors.append((attempted_code, error))
@@ -430,7 +535,10 @@ def download_arxiv_source_files(arxiv_code):
                 continue
             tried_source_candidates.add(candidate_code)
             try:
-                return _download_arxiv_source_version(candidate_code)
+                return _download_arxiv_source_version(
+                    candidate_code,
+                    delete_tar_after_download=delete_tar_after_download,
+                )
             except SourceDownloadError as error:
                 attempted_code = _attempt_code(candidate_code, error)
                 source_errors.append((attempted_code, error))
@@ -468,7 +576,11 @@ def download_arxiv_source_files(arxiv_code):
     )
 
 
-def download_random_arxiv_papers(n=1):
+def download_random_arxiv_papers(
+    n=1,
+    delete_tar_after_download=False,
+    skip_download_if_exists=True,
+):
     
     def generate_random_arxiv_id():
         year = str(random.randint(1991, 2022))[-2:]  # arXiv was launched in 1991, change the end year as needed
@@ -488,6 +600,10 @@ def download_random_arxiv_papers(n=1):
     ]
     for arxiv_code in arxiv_codes:
         print(f"Downloading source files for paper: {arxiv_code}")
-        download_arxiv_source_files(arxiv_code)
+        download_arxiv_source_files(
+            arxiv_code,
+            delete_tar_after_download=delete_tar_after_download,
+            skip_download_if_exists=skip_download_if_exists,
+        )
     
     return arxiv_codes

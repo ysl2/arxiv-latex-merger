@@ -28,15 +28,35 @@ arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 [...]
 
 This will download the source files for all selected codes, detect the main TeX file, merge the TeX inputs, inline the generated `.bbl` bibliography when available, and save the merged TeX files with the downloaded arXiv version in the filename, such as `2304.09319v1.tex` and `1812.09740v2.tex`.
 
-When a code is passed without an explicit version, the tool looks up the latest arXiv version first. If the latest source archive cannot be downloaded, it falls back through older source versions in descending order, for example `v3`, `v2`, `v1`. If no source version is available, it downloads the latest PDF and then falls back through older PDF versions in the same order. Each source/PDF download is retried up to three times before falling back, and failed attempts remove partial files before retrying. Downloaded source/PDF directories also include the version, for example `2304.09319v1/`. PDF-only downloads also create a relative symlink next to the versioned directory, such as `2304.09319v1.pdf -> 2304.09319v1/2304.09319v1.pdf`.
-
-Use `--skip_download_if_exists` to reuse an existing local source directory instead of downloading it again:
+Downloaded source archives are kept by default beside their extracted directories, for example `2304.09319v1.tar.gz` and `2304.09319v1/`. Use `--delete_tar_after_download true` (or the shorter bare flag `--delete_tar_after_download`) to delete an archive after it has been extracted successfully:
 
 ```
-arxiv-latex-merger --arxiv_codes 2304.09319 --skip_download_if_exists
+arxiv-latex-merger --arxiv_codes 2304.09319 --delete_tar_after_download true
 ```
 
-If a local versioned directory such as `2304.09319v1/` exists, the tool reuses it. If no matching versioned directory exists, it falls back to downloading from arXiv as usual.
+`--skip_download_if_exists` defaults to `true`. With this default, repeated runs reuse local artifacts instead of downloading them again: if a matching versioned `.tar.gz` exists, it is extracted again and replaces the matching extracted directory; if no archive exists but the matching directory does, that directory is reused; and an arXiv code without an explicit version reuses its highest local version.
+
+Set `--skip_download_if_exists false` to ignore matching local archives and directories, force a fresh tar download, and replace the extracted directory:
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 --skip_download_if_exists false
+```
+
+Use `--delete_folder_after_merge true` (or the bare flag `--delete_folder_after_merge`) to delete the extracted source directory after a successful merge. This is independent of archive retention because the archive is stored beside the extracted directory:
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 --delete_folder_after_merge true
+```
+
+When a code is passed without an explicit version and no local artifact is selected (either none exists or local reuse is disabled), the tool looks up the latest arXiv version first. If the latest source archive cannot be downloaded, it falls back through older source versions in descending order, for example `v3`, `v2`, `v1`. If no source version is available, it downloads the latest PDF and then falls back through older PDF versions in the same order. Each source/PDF download is retried up to three times before falling back, and failed attempts remove partial files before retrying. Downloaded source/PDF directories also include the version, for example `2304.09319v1/`. PDF-only downloads also create a relative symlink next to the versioned directory, such as `2304.09319v1.pdf -> 2304.09319v1/2304.09319v1.pdf`.
+
+When multiple IDs are supplied to `--arxiv_codes`, their download-extract-merge pipelines run concurrently. `--threds` controls the maximum number of concurrent paper workers and defaults to 8 (`--threads` is also accepted as a correctly spelled alias):
+
+```
+arxiv-latex-merger --arxiv_codes 2304.09319 1812.09740 --threds 8
+```
+
+To reduce the risk of arXiv HTTP 429 rate limits, source tar downloads are protected by a global mutex: only one tar is downloaded at a time. Extraction and merging remain concurrent across papers.
 
 Use `--no_bib` to preserve the original `\bibliographystyle{...}` and `\bibliography{...}` commands instead of inlining the generated `.bbl` bibliography:
 

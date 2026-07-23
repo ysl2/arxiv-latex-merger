@@ -3,7 +3,10 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -1357,6 +1360,145 @@ class MergerRemoveCommentsTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_option_defaults(self):
+        args = cli_module._build_parser().parse_args([])
+
+        self.assertTrue(args.skip_download_if_exists)
+        self.assertFalse(args.delete_tar_after_download)
+        self.assertFalse(args.delete_folder_after_merge)
+        self.assertEqual(args.threds, 8)
+
+    def test_cli_boolean_options_accept_explicit_false(self):
+        args = cli_module._build_parser().parse_args(
+            [
+                "--skip_download_if_exists",
+                "false",
+                "--delete_tar_after_download",
+                "false",
+                "--delete_folder_after_merge",
+                "false",
+            ]
+        )
+
+        self.assertFalse(args.skip_download_if_exists)
+        self.assertFalse(args.delete_tar_after_download)
+        self.assertFalse(args.delete_folder_after_merge)
+
+    def test_delete_tar_after_download_option_is_forwarded_to_source_download(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            delete_folder_after_merge=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+            delete_tar_after_download=True,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", return_value="1234.56789v1") as download_mock:
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789v1/main.tex"):
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+        download_mock.assert_called_once_with(
+            "1234.56789",
+            skip_download_if_exists=False,
+            delete_tar_after_download=True,
+        )
+
+    def test_delete_tar_after_download_option_is_forwarded_to_random_downloads(self):
+        args = SimpleNamespace(
+            arxiv_codes=[],
+            n_random=2,
+            demacro=False,
+            delete_folder_after_merge=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+            delete_tar_after_download=True,
+        )
+
+        with patch("arxiv_latex_merger.cli.download_random_arxiv_papers", return_value=[]) as download_mock:
+            with redirect_stdout(io.StringIO()):
+                cli_module.main(args)
+
+        download_mock.assert_called_once_with(
+            2,
+            skip_download_if_exists=False,
+            delete_tar_after_download=True,
+        )
+
+    def test_delete_folder_after_merge_option_is_forwarded_to_merger(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1234.56789"],
+            n_random=1,
+            demacro=False,
+            delete_folder_after_merge=True,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=False,
+            delete_tar_after_download=False,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", return_value="1234.56789v1"):
+                    with patch("arxiv_latex_merger.cli.find_main_tex_file", return_value="1234.56789v1/main.tex"):
+                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")) as merge_mock:
+                            with redirect_stdout(io.StringIO()):
+                                cli_module.main(args)
+            finally:
+                os.chdir(previous_cwd)
+
+        merge_mock.assert_called_once_with(
+            "1234.56789v1/main.tex",
+            remove_src=True,
+            merge_bib=True,
+            remove_comments=False,
+        )
+
+    def test_multiple_arxiv_codes_use_requested_concurrency_limit(self):
+        args = SimpleNamespace(
+            arxiv_codes=["1111.11111", "2222.22222", "3333.33333"],
+            n_random=1,
+            demacro=False,
+            delete_folder_after_merge=False,
+            no_bib=False,
+            remove_comments=False,
+            skip_download_if_exists=True,
+            delete_tar_after_download=False,
+            threds=2,
+        )
+        state_lock = threading.Lock()
+        active_workers = 0
+        max_active_workers = 0
+
+        def fake_process(code, process_args):
+            nonlocal active_workers, max_active_workers
+            with state_lock:
+                active_workers += 1
+                max_active_workers = max(max_active_workers, active_workers)
+            time.sleep(0.03)
+            with state_lock:
+                active_workers -= 1
+
+        with patch("arxiv_latex_merger.cli._process_arxiv_code", side_effect=fake_process) as process_mock:
+            with redirect_stdout(io.StringIO()):
+                cli_module.main(args)
+
+        self.assertEqual(process_mock.call_count, 3)
+        self.assertEqual(max_active_workers, 2)
+
     def test_arxiv_codes_downloads_and_merges_each_code_once(self):
         args = SimpleNamespace(
             arxiv_codes=["1234.56789"],
@@ -1383,7 +1525,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual((Path(temp_dir) / "1234.56789v1.tex").read_text(), "merged")
             self.assertFalse((Path(temp_dir) / "1234.56789v1_merged_utf-8.tex").exists())
 
-        download_mock.assert_called_once_with("1234.56789")
+        download_mock.assert_called_once_with(
+            "1234.56789",
+            skip_download_if_exists=False,
+        )
         find_mock.assert_called_once_with("1234.56789v1")
         merge_mock.assert_called_once_with(
             "1234.56789v1/main.tex",
@@ -1456,7 +1601,7 @@ class CliTests(unittest.TestCase):
         download_mock.assert_called_once_with("1234.56789")
         find_mock.assert_called_once_with("1234.56789v1")
 
-    def test_skip_download_if_exists_downloads_when_existing_directory_has_no_main_tex(self):
+    def test_skip_download_if_exists_does_not_redownload_incomplete_directory(self):
         args = SimpleNamespace(
             arxiv_codes=["1234.56789"],
             n_random=1,
@@ -1473,26 +1618,24 @@ class CliTests(unittest.TestCase):
             previous_cwd = os.getcwd()
             os.chdir(temp_dir)
             try:
-                with patch("arxiv_latex_merger.cli.download_arxiv_source_files", return_value="1234.56789v1") as download_mock:
+                with patch("arxiv_latex_merger.cli.download_arxiv_source_files") as download_mock:
                     with patch(
                         "arxiv_latex_merger.cli.find_main_tex_file",
-                        side_effect=[
-                            FileNotFoundError("No main .tex file found"),
-                            "1234.56789v1/main.tex",
-                        ],
+                        side_effect=FileNotFoundError("No main .tex file found"),
                     ) as find_mock:
-                        with patch("arxiv_latex_merger.cli.merge_tex_files", return_value=("merged", "utf-8")):
+                        with patch("arxiv_latex_merger.cli.merge_tex_files") as merge_mock:
                             stdout = io.StringIO()
                             with redirect_stdout(stdout):
                                 cli_module.main(args)
             finally:
                 os.chdir(previous_cwd)
 
-            self.assertEqual((root / "1234.56789v1.tex").read_text(), "merged")
+            self.assertFalse((root / "1234.56789v1.tex").exists())
 
-        download_mock.assert_called_once_with("1234.56789")
-        self.assertEqual(find_mock.call_count, 2)
-        self.assertIn("downloading again", stdout.getvalue())
+        download_mock.assert_not_called()
+        find_mock.assert_called_once_with("1234.56789v1")
+        merge_mock.assert_not_called()
+        self.assertIn("local source directory has no main .tex file", stdout.getvalue())
 
     def test_skip_download_if_exists_skips_existing_pdf_only_directory(self):
         args = SimpleNamespace(
@@ -1687,7 +1830,10 @@ class CliTests(unittest.TestCase):
             self.assertTrue((root / "1234.56789v2").is_dir())
             self.assertEqual((root / "1234.56789v2.tex").read_text(), "new merged")
 
-        download_mock.assert_called_once_with("1234.56789")
+        download_mock.assert_called_once_with(
+            "1234.56789",
+            skip_download_if_exists=False,
+        )
 
     def test_downloaded_pdf_version_removes_older_local_versions(self):
         args = SimpleNamespace(
@@ -1725,7 +1871,10 @@ class CliTests(unittest.TestCase):
             self.assertTrue((root / "1234.56789v2").is_dir())
             self.assertTrue((root / "1234.56789v2.pdf").is_symlink())
 
-        download_mock.assert_called_once_with("1234.56789")
+        download_mock.assert_called_once_with(
+            "1234.56789",
+            skip_download_if_exists=False,
+        )
         find_mock.assert_not_called()
         merge_mock.assert_not_called()
 
@@ -1740,7 +1889,8 @@ class CliTests(unittest.TestCase):
             skip_download_if_exists=False,
         )
 
-        def fake_download(code):
+        def fake_download(code, **kwargs):
+            self.assertEqual(kwargs, {"skip_download_if_exists": False})
             if code == "1111.11111":
                 raise downloader_module.SourceDownloadError("no source archive")
             return "2222.22222v1"
@@ -1828,7 +1978,8 @@ class DownloaderTests(unittest.TestCase):
 
             output_dir = Path(temp_dir) / "1234.56789v1"
             self.assertTrue((output_dir / "main.tex").exists())
-            self.assertFalse((output_dir / "1234.56789v1.tar.gz").exists())
+            archive_path = Path(temp_dir) / "1234.56789v1.tar.gz"
+            self.assertEqual(archive_path.read_bytes(), tar_payload)
 
         self.assertEqual(downloaded_code, "1234.56789v1")
         self.assertIn("Downloading source files for 1234.56789v1...", stdout.getvalue())
@@ -1839,6 +1990,225 @@ class DownloaderTests(unittest.TestCase):
                 call("https://arxiv.org/src/1234.56789", stream=True),
             ],
         )
+
+    def test_existing_archive_replaces_directory_without_downloading(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"new source\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "1234.56789v2.tar.gz"
+            archive_path.write_bytes(payload.getvalue())
+            output_dir = root / "1234.56789v2"
+            output_dir.mkdir()
+            (output_dir / "main.tex").write_text("old source\n", encoding="utf-8")
+            (output_dir / "stale.tex").write_text("stale\n", encoding="utf-8")
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get") as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files("1234.56789v2")
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((output_dir / "main.tex").read_text(encoding="utf-8"), "new source\n")
+            self.assertFalse((output_dir / "stale.tex").exists())
+            self.assertTrue(archive_path.is_file())
+
+        self.assertEqual(downloaded_code, "1234.56789v2")
+        get_mock.assert_not_called()
+
+    def test_delete_tar_after_download_removes_existing_archive_after_extraction(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"source\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "1234.56789v1.tar.gz"
+            archive_path.write_bytes(payload.getvalue())
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get") as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files(
+                            "1234.56789v1",
+                            delete_tar_after_download=True,
+                        )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertTrue((root / "1234.56789v1" / "main.tex").is_file())
+            self.assertFalse(archive_path.exists())
+
+        self.assertEqual(downloaded_code, "1234.56789v1")
+        get_mock.assert_not_called()
+
+    def test_skip_download_if_exists_false_forces_archive_redownload(self):
+        old_payload = io.BytesIO()
+        with tarfile.open(fileobj=old_payload, mode="w:gz") as tar:
+            content = b"old source\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+
+        new_payload = io.BytesIO()
+        with tarfile.open(fileobj=new_payload, mode="w:gz") as tar:
+            content = b"new source\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        new_tar_payload = new_payload.getvalue()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "1234.56789v1.tar.gz"
+            archive_path.write_bytes(old_payload.getvalue())
+            output_dir = root / "1234.56789v1"
+            output_dir.mkdir()
+            (output_dir / "main.tex").write_text("old extracted source\n", encoding="utf-8")
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                response = self._download_response(new_tar_payload)
+                with patch("arxiv_latex_merger.downloader.requests.get", return_value=response) as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files(
+                            "1234.56789v1",
+                            skip_download_if_exists=False,
+                        )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(
+                (output_dir / "main.tex").read_text(encoding="utf-8"),
+                "new source\n",
+            )
+            self.assertEqual(archive_path.read_bytes(), new_tar_payload)
+
+        self.assertEqual(downloaded_code, "1234.56789v1")
+        get_mock.assert_called_once_with(
+            "https://arxiv.org/src/1234.56789v1",
+            stream=True,
+        )
+
+    def test_source_tar_downloads_are_serialized_across_papers(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"source\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        tar_payload = payload.getvalue()
+
+        state_lock = threading.Lock()
+        active_downloads = 0
+        max_active_downloads = 0
+
+        class SlowSourceResponse:
+            headers = {"content-length": str(len(tar_payload))}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                nonlocal active_downloads, max_active_downloads
+                with state_lock:
+                    active_downloads += 1
+                    max_active_downloads = max(max_active_downloads, active_downloads)
+                time.sleep(0.03)
+                yield tar_payload
+                with state_lock:
+                    active_downloads -= 1
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch(
+                    "arxiv_latex_merger.downloader.requests.get",
+                    side_effect=lambda *args, **kwargs: SlowSourceResponse(),
+                ):
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            results = list(
+                                executor.map(
+                                    lambda code: downloader_module.download_arxiv_source_files(
+                                        code,
+                                        skip_download_if_exists=False,
+                                    ),
+                                    ["1111.11111v1", "2222.22222v1"],
+                                )
+                            )
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(results, ["1111.11111v1", "2222.22222v1"])
+        self.assertEqual(max_active_downloads, 1)
+
+    def test_existing_directory_is_reused_without_downloading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "1234.56789v1"
+            output_dir.mkdir()
+            (output_dir / "main.tex").write_text("source\n", encoding="utf-8")
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get") as get_mock:
+                    with redirect_stdout(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files("1234.56789v1")
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual((output_dir / "main.tex").read_text(encoding="utf-8"), "source\n")
+
+        self.assertEqual(downloaded_code, "1234.56789v1")
+        get_mock.assert_not_called()
+
+    def test_unversioned_code_reuses_highest_local_version(self):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+            content = b"version two\n"
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "1234.56789v1").mkdir()
+            (root / "1234.56789v1" / "main.tex").write_text("version one\n", encoding="utf-8")
+            (root / "1234.56789v2.tar.gz").write_bytes(payload.getvalue())
+
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with patch("arxiv_latex_merger.downloader.requests.get") as get_mock:
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        downloaded_code = downloader_module.download_arxiv_source_files("1234.56789")
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(
+                (root / "1234.56789v2" / "main.tex").read_text(encoding="utf-8"),
+                "version two\n",
+            )
+
+        self.assertEqual(downloaded_code, "1234.56789v2")
+        get_mock.assert_not_called()
 
     def test_download_arxiv_source_files_falls_back_to_pdf_when_no_source_versions_download(self):
         pdf_payload = b"%PDF-1.7\n"
@@ -2037,7 +2407,7 @@ class DownloaderTests(unittest.TestCase):
 
             output_dir = Path(temp_dir) / "1234.56789v1"
             self.assertTrue((output_dir / "main.tex").exists())
-            self.assertFalse((output_dir / "1234.56789v1.tar.gz").exists())
+            self.assertTrue((Path(temp_dir) / "1234.56789v1.tar.gz").is_file())
 
         self.assertEqual(downloaded_code, "1234.56789v1")
         self.assertEqual(source_attempts, 3)
