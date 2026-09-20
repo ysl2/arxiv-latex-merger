@@ -4,18 +4,20 @@ A simple command line tool to merge LaTeX files from arXiv source. This tool dow
 
 ## Installation
 
-To install the arXiv LaTeX Merger, clone the repository and run the setup script:
+To install the arXiv LaTeX Merger in a virtual environment, clone the repository and run:
 
-```
-git clone https://github.com/iokarkan/arxiv_latex_merger.git
-cd arxiv_latex_merger
-python setup.py install
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
+arxiv-latex-merger --help
 ```
 
-Alternatively, you can install it directly from PyPI (if/once it's published there) using `pip`:
+To install it with the system Python instead, run outside a virtual environment:
 
-```
-pip install arxiv-latex-merger
+```bash
+python3 -m pip install .
+arxiv-latex-merger --help
 ```
 
 ## Usage
